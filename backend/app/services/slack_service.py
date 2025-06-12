@@ -163,6 +163,9 @@ class SlackService:
             elif response["type"] == "one_on_one_final_plan":
                 # 対話型具体化プロセス完了後の最終アクションプラン
                 formatted_response = self._format_one_on_one_final_plan_for_slack(response)
+            elif response["type"] == "educational_explanation":
+                # 🎓 教育的概念説明
+                formatted_response = self._format_educational_explanation_for_slack(response)
             elif response["type"] == "action_plan":
                 action_plan = response["data"]
                 formatted_response = self._format_action_plan_for_slack(action_plan, response["completeness_score"])
@@ -333,9 +336,38 @@ class SlackService:
         for i, question in enumerate(questions, 1):
             formatted += f"{i}. {question}\n"
         
-        # 進捗とガイダンス
+        # 進捗とフィードバック（実用レベル対応）
         formatted += f"\n📊 **進捗**: {current_index + 1}/{total_instructions} の指示を具体化中\n"
-        formatted += "\n💡 **お答えください**: 上記の質問にできるだけ具体的にお答えください。具体的であればあるほど、実践的なアクションプランを作成できます。"
+        
+        # 具体性フィードバック
+        concreteness_feedback = response.get("concreteness_feedback", "")
+        if concreteness_feedback:
+            formatted += f"🎯 **{concreteness_feedback}**\n"
+        
+        # 質問回数表示（実用レベル）
+        dialogue_progress = response.get("dialogue_progress", "")
+        if dialogue_progress:
+            formatted += f"⏱️ **{dialogue_progress}**\n"
+        
+        # 実装上の不足要素
+        implementation_gaps = response.get("implementation_gaps", [])
+        if implementation_gaps:
+            formatted += f"\n🔧 **改善が必要な点**: {', '.join(implementation_gaps[:2])}\n"
+        
+        # 必要な明確化事項
+        required_clarifications = response.get("required_clarifications", [])
+        if required_clarifications:
+            formatted += f"📝 **明確化が必要**: {', '.join(required_clarifications[:2])}\n"
+        
+        # 実行可能性チェック結果（新機能）
+        practical_barriers = response.get("practical_barriers", [])
+        if practical_barriers:
+            formatted += f"⚠️ **実行上の課題**: {', '.join(practical_barriers[:2])}\n"
+        
+        formatted += "\n💡 **お答えください**: 実用レベル(95%)達成のため、以下の詳細さが必要です：\n"
+        formatted += "• ⏰ 具体的な時間設定（「明日朝9時から」「毎回3分間」）\n"
+        formatted += "• 📍 場所・道具の明確化（「商談開始時に」「A4用紙に」）\n" 
+        formatted += "• 📊 測定方法の具体化（「週1回振り返る」「メモ数をカウント」）"
         
         # 文字数制限対応
         if len(formatted) > 3000:
@@ -408,6 +440,25 @@ class SlackService:
         
         # 完了メッセージ
         formatted += "\n✨ **お疲れ様でした！** 上司からの抽象的な指示が、明日から実行できる具体的なアクションプランになりました。"
+        
+        # 文字数制限対応
+        if len(formatted) > 3000:
+            formatted = formatted[:2900] + "\n\n_（詳細が省略されています）_"
+        
+        return formatted
+    
+    def _format_educational_explanation_for_slack(self, response: Dict[str, Any]) -> str:
+        """教育的説明をSlack用にフォーマット"""
+        explanation = response.get("explanation", "")
+        instruction = response.get("instruction_being_clarified", {})
+        abstract_concept = instruction.get("abstract_concept", "")
+        follow_up = response.get("follow_up", "")
+        stage_description = response.get("stage_description", "")
+        
+        formatted = f"🎓 **{stage_description}**\n\n"
+        formatted += f"📚 **「{abstract_concept}」について説明します**\n\n"
+        formatted += f"{explanation}\n\n"
+        formatted += f"💡 **次のステップ**\n{follow_up}"
         
         # 文字数制限対応
         if len(formatted) > 3000:

@@ -730,7 +730,7 @@ class DialogueManager:
         session_state: Dict[str, Any],
         db_session: Any
     ) -> Dict[str, Any]:
-        """1on1具体化プロセスの継続処理（自律的な判断）"""
+        """1on1具体化プロセスの継続処理（教育的アプローチ）"""
         
         current_index = session_state.get("current_instruction_index", 0)
         instructions = session_state.get("abstract_instructions", [])
@@ -741,6 +741,26 @@ class DialogueManager:
             return await self._generate_final_action_plan_from_session(session_id, session_state, db_session)
         
         current_instruction = instructions[current_index]
+        
+        # 🎓 教育的チェック: 新人が概念を理解していないかチェック
+        needs_explanation = await self._check_if_needs_concept_explanation(
+            user_response, current_instruction
+        )
+        
+        if needs_explanation:
+            # 概念説明を提供
+            explanation = await self._generate_educational_explanation(
+                current_instruction, user_response
+            )
+            
+            return {
+                "type": "educational_explanation",
+                "explanation": explanation,
+                "instruction_being_clarified": current_instruction,
+                "stage": "concept_education",
+                "stage_description": f"🎓 概念説明: 「{current_instruction.get('abstract_concept', '')}」について",
+                "follow_up": "この説明で理解できましたか？理解できたら、具体的な経験や考えを教えてください。"
+            }
         
         # 現在の対話履歴に新人の回答を追加
         if current_index < len(conversation_history):
@@ -765,10 +785,29 @@ class DialogueManager:
         )
         
         is_concrete = concreteness_result.get("is_concrete", False)
+        practical_readiness = concreteness_result.get("practical_readiness", False)
         concreteness_score = concreteness_result.get("score", 0)
-        missing_details = concreteness_result.get("missing_details", [])
+        implementation_gaps = concreteness_result.get("implementation_gaps", [])
+        required_clarifications = concreteness_result.get("required_clarifications", [])
         
-        if is_concrete and concreteness_score >= 80:
+        # 質問回数をカウント
+        question_count = len([entry for entry in conversation_history[current_index] 
+                             if entry.get("role") == "user"])
+        
+        # 深い対話のための最低質問回数（実用レベル）
+        MIN_QUESTIONS = 5
+        MAX_QUESTIONS = 7
+        
+        # 質問回数と具体性の両方をチェック
+        enough_questions = question_count >= MIN_QUESTIONS
+        max_questions_reached = question_count >= MAX_QUESTIONS
+        
+        # 実用レベル完了条件：
+        # 1. 最低5回の質問を実施済み
+        # 2. 95%以上の具体性スコア
+        # 3. 実践準備完了
+        # または最大7回に達した場合
+        if (enough_questions and is_concrete and practical_readiness and concreteness_score >= 95) or max_questions_reached:
             # 十分具体的 → 次の指示へ移動
             session_state["clarified_instructions"].append({
                 "instruction": current_instruction,
@@ -812,8 +851,10 @@ class DialogueManager:
             deeper_questions = await self._generate_deeper_clarification_questions(
                 current_instruction,
                 conversation_history[current_index],
-                missing_details,
-                concreteness_score
+                implementation_gaps,
+                required_clarifications,
+                concreteness_score,
+                question_count  # 質問回数を追加
             )
             
             # 対話履歴にAIの質問を追加
@@ -826,6 +867,23 @@ class DialogueManager:
             session_state["conversation_history"] = conversation_history
             await self._update_one_on_one_session_state(session_id, session_state)
             
+            # 段階情報を表示用に準備
+            if question_count <= 2:
+                stage_emoji = "📋"
+                stage_name = "基本理解確認"
+            elif question_count <= 4:
+                stage_emoji = "🔍"
+                stage_name = "実体験深掘り"
+            elif question_count == 5:
+                stage_emoji = "⚙️"
+                stage_name = "実行可能性検証"
+            elif question_count == 6:
+                stage_emoji = "🤔"
+                stage_name = "Why理解確認"
+            else:
+                stage_emoji = "✅"
+                stage_name = "最終具体化"
+            
             return {
                 "type": "one_on_one_clarification",
                 "questions": deeper_questions,
@@ -833,9 +891,11 @@ class DialogueManager:
                 "total_instructions": len(instructions),
                 "current_instruction_index": current_index,
                 "stage": "instruction_clarification",
-                "stage_description": f"📋 上司の指示の具体化 ({current_index + 1}/{len(instructions)}) - 更に詳しく",
-                "concreteness_feedback": f"具体性: {concreteness_score}% - より詳細な情報が必要です",
-                "missing_aspects": missing_details[:3]  # 最大3つの不足要素を表示
+                "stage_description": f"{stage_emoji} {stage_name} ({current_index + 1}/{len(instructions)}) - 質問 {question_count}/7回",
+                "concreteness_feedback": f"具体性: {concreteness_score}% - 実用レベル(95%)まで深掘り中",
+                "dialogue_progress": f"質問回数: {question_count}/7回 | 最低5回は必要",
+                "implementation_gaps": implementation_gaps[:3],  # 不足要素を表示
+                "required_clarifications": required_clarifications[:3]  # 必要な明確化を表示
             }
     
     async def _check_instruction_concreteness(
@@ -844,7 +904,7 @@ class DialogueManager:
         conversation_history: List[Dict[str, str]],
         latest_response: str
     ) -> Dict[str, Any]:
-        """指示の具体性をLLMでチェック"""
+        """厳格な多段階具体性評価システム"""
         
         abstract_concept = instruction.get("abstract_concept", "")
         
@@ -854,31 +914,73 @@ class DialogueManager:
         ])
         
         prompt_messages = [
-            SystemMessage(content=f"""営業コーチとして、新人営業マンの回答が十分具体的かを評価してください。
+            SystemMessage(content=f"""実用レベルの営業コーチとして、新人営業マンの回答を厳格に評価してください。
 
 評価対象の抽象的指示: "{abstract_concept}"
 
-具体性の基準：
-- 明日から実行できる具体的な行動が明確か
-- 頻度、タイミング、方法が具体的に示されているか
-- 新人が「何をすればいいかわからない」状態を脱却できているか
-- 測定可能な要素があるか
+【厳格な実用レベル評価基準】:
 
-例：
-❌ 抽象的: "もっと相手の気持ちを理解する"
-✅ 具体的: "商談開始時に3分間、相手の最近の業務状況を質問し、メモを取る"
+🟢 レベル5 (95-100%): 実用完了レベル
+- 明日朝9時から実行できる具体的な手順が明記
+- 実行頻度、所要時間、測定方法が数値で指定
+- 失敗時の対処法まで含む
+- 他人にも教えられるレベルの詳細
+例: "商談開始時に3分間、相手の業務状況を3つの質問(売上動向/課題/目標)で聞き、A4用紙にメモ。週1回振り返り"
 
-以下のJSON形式で評価してください：
+🟡 レベル4 (80-94%): 実行準備レベル  
+- 具体的な行動は明確だが、細部で曖昧さが残る
+- 測定方法は示されているが数値目標が不明確
+- タイミングや頻度がやや曖昧
+例: "商談時に相手の状況を質問してメモを取る。定期的に振り返る"
+
+🟠 レベル3 (60-79%): 理解進行レベル
+- 基本的な行動方針は理解
+- 具体的な実行方法に曖昧さが多い
+- 測定や振り返り方法が不明確
+例: "相手の状況をよく聞いて理解するようにする"
+
+🔴 レベル2 (40-59%): 概念認識レベル
+- 概念は理解しているが実行方法が不明
+- 抽象的な表現が多い
+例: "もっと相手のことを理解したい"
+
+⚫ レベル1 (0-39%): 理解不足レベル
+- 概念の理解が不十分
+- 具体的な行動が全く見えない
+例: "頑張ります" "意識します"
+
+【重要】: 実用レベルでは95%以上のみを「完了」と判定してください。
+90%以下は必ず追加の深掘りが必要です。
+
+【実行可能性の厳密チェック項目】:
+✅ 時間設定: 「明日朝9時から」「毎回3分間」等の具体的時間
+✅ 場所・環境: 「商談開始時に」「A4用紙に」等の具体的場所・道具
+✅ 手順詳細: 「3つの質問(売上・課題・目標)で聞く」等のステップ
+✅ 測定方法: 「週1回振り返る」「メモの数をカウント」等の確認方法
+✅ 失敗対処: 「うまくいかない時はXXする」等の代替案
+✅ リソース: 必要な道具・権限・時間が明確で実現可能
+
+以下のJSON形式で厳格に評価してください：
 ```json
 {{
-  "is_concrete": true/false,
+  "level": 1-5,
   "score": 0-100,
-  "missing_details": ["不足している具体的要素1", "不足している具体的要素2"],
-  "concrete_aspects": ["具体的になっている要素1", "具体的になっている要素2"],
-  "next_focus": "次に重点的に聞くべき点"
+  "is_concrete": true/false,
+  "practical_readiness": true/false,
+  "executable_tomorrow": true/false,
+  "time_specification": true/false,
+  "resource_clarity": true/false,
+  "measurement_method": true/false,
+  "failure_handling": true/false,
+  "implementation_gaps": ["不足要素1", "不足要素2"],
+  "strong_points": ["具体的な要素1", "具体的な要素2"], 
+  "required_clarifications": ["必要な明確化1", "必要な明確化2"],
+  "next_focus": "次に重点的に確認すべき点",
+  "why_understanding": true/false,
+  "practical_barriers": ["実行上の障害1", "障害2"]
 }}
 ```"""),
-            HumanMessage(content=f"会話履歴：\\n{conversation_text}\\n\\n最新の回答: {latest_response}\\n\\n具体性を評価してください。")
+            HumanMessage(content=f"会話履歴：\\n{conversation_text}\\n\\n最新の回答: {latest_response}\\n\\n厳格な実用レベル基準で評価してください。")
         ]
         
         try:
@@ -892,16 +994,42 @@ class DialogueManager:
                 if json_end != -1:
                     response_text = response_text[json_start:json_end].strip()
             
-            return json.loads(response_text)
+            result = json.loads(response_text)
+            
+            # 実用レベルでは95%以上かつ実行可能性チェック項目をクリアが必要
+            score = result.get("score", 0)
+            executable_tomorrow = result.get("executable_tomorrow", False)
+            time_specification = result.get("time_specification", False) 
+            resource_clarity = result.get("resource_clarity", False)
+            measurement_method = result.get("measurement_method", False)
+            
+            # 厳格な実行可能性判定
+            practical_requirements_met = all([
+                executable_tomorrow,
+                time_specification,
+                resource_clarity,
+                measurement_method
+            ])
+            
+            if score < 95 or not practical_requirements_met:
+                result["is_concrete"] = False
+                result["practical_readiness"] = False
+            
+            return result
             
         except Exception:
-            # エラーの場合はもう少し深掘りが必要と判定
+            # エラーの場合は厳格に低評価
             return {
+                "level": 2,
+                "score": 30,
                 "is_concrete": False,
-                "score": 40,
-                "missing_details": ["具体的な手順", "実行タイミング", "測定方法"],
-                "concrete_aspects": [],
-                "next_focus": "より詳細な実行方法"
+                "practical_readiness": False,
+                "implementation_gaps": ["具体的な手順", "実行タイミング", "測定方法", "数値目標"],
+                "strong_points": [],
+                "required_clarifications": ["実行手順の詳細化", "測定可能な目標設定"],
+                "next_focus": "具体的な実行方法の明確化",
+                "why_understanding": False,
+                "measurability": False
             }
     
     async def _update_one_on_one_session_state(self, session_id: str, state_data: Dict[str, Any]) -> None:
@@ -926,8 +1054,10 @@ class DialogueManager:
         self, 
         instruction: Dict[str, str], 
         conversation_history: List[Dict[str, str]],
-        missing_details: List[str],
-        concreteness_score: int
+        implementation_gaps: List[str],
+        required_clarifications: List[str],
+        concreteness_score: int,
+        question_count: int
     ) -> List[str]:
         """より深い具体化質問を生成"""
         
@@ -947,19 +1077,56 @@ class DialogueManager:
         if key_elements:
             key_elements_text = f"\n🔑 重視すべき要素: {', '.join(key_elements)}"
         
+        # 質問段階の決定
+        if question_count <= 2:
+            question_stage = "基本理解確認"
+            stage_focus = "概念の基本的理解と経験の確認"
+        elif question_count <= 4:
+            question_stage = "実体験深掘り"
+            stage_focus = "具体的な経験や状況の詳細化"
+        elif question_count == 5:
+            question_stage = "実行可能性検証"
+            stage_focus = "明日から実行できる具体的な手順の確認"
+        elif question_count == 6:
+            question_stage = "Why理解確認"
+            stage_focus = "なぜその行動が重要かの理解確認"
+        else:
+            question_stage = "最終具体化"
+            stage_focus = "測定可能で他人にも説明できるレベルの詳細化"
+        
         # 会話履歴をテキスト化
         conversation_text = "\\n".join([
             f"{entry['role']}: {entry['content']}" for entry in conversation_history
         ])
         
         prompt_messages = [
-            SystemMessage(content=f"""新人営業マンの回答はまだ抽象的です（具体性: {concreteness_score}%）。
-【重要な制約】: 質問は必ず「{abstract_concept}」の文脈内でのみ生成してください。
+            SystemMessage(content=f"""実用レベルの営業コーチとして、段階的な深掘り質問を生成してください。
+
+【対話の現状】:
+- 質問回数: {question_count}/7回
+- 現在の段階: {question_stage}
+- この段階の焦点: {stage_focus}
+- 具体性スコア: {concreteness_score}%
 
 対象の抽象的指示: "{abstract_concept}"
 上司の具体的な指示内容: "{original_text}"
 対象スコープ: {specific_scope if specific_scope else abstract_concept}{excluded_text}{key_elements_text}
-不足している要素: {missing_details}
+実装上の不足要素: {implementation_gaps}
+必要な明確化事項: {required_clarifications}
+
+【段階別質問戦略】:
+📋 基本理解確認 (1-2回目): 概念理解と基本的な経験
+🔍 実体験深掘り (3-4回目): 具体的な状況と詳細な経験
+⚙️ 実行可能性検証 (5回目): 実際の手順と測定方法
+🤔 Why理解確認 (6回目): なぜその行動が重要かの理解
+✅ 最終具体化 (7回目): 他人に説明できるレベルの完全な詳細
+
+【Why理解確認の重要性】:
+新人が「なぜその行動が重要なのか」を理解していることで：
+- 継続的な実行が可能になる
+- 状況に応じた応用ができる  
+- 他のメンバーにも説明できる
+- モチベーションが維持される
 
 【厳密な文脈制約】:
 🎯 深掘り質問は「{abstract_concept}」に特化した内容のみ
@@ -1133,3 +1300,87 @@ class DialogueManager:
                 "type": "error",
                 "message": f"最終アクションプラン生成中にエラーが発生しました: {str(e)}"
             }
+    
+    # === 教育的説明機能 ===
+    
+    async def _check_if_needs_concept_explanation(
+        self,
+        user_response: str,
+        instruction: Dict[str, Any]
+    ) -> bool:
+        """新人が概念説明を必要としているかチェック"""
+        
+        abstract_concept = instruction.get("abstract_concept", "")
+        
+        # 明確な理解不足のサイン
+        confusion_indicators = [
+            "って何？", "とは？", "分からない", "わからない",
+            "知らない", "初めて聞く", "意味が", "どういう",
+            "よくわからない", "理解できない", "？？？",
+            "何のこと", "具体的に何", "どう違う"
+        ]
+        
+        # 基本的なチェック
+        for indicator in confusion_indicators:
+            if indicator in user_response:
+                return True
+        
+        # LLMによる詳細チェック
+        prompt_messages = [
+            SystemMessage(content=f"""新人営業マンの回答を分析し、「{abstract_concept}」という概念を理解しているかを判定してください。
+
+理解不足のサイン：
+- 質問で返す（「〜って何？」「〜とは？」）
+- 困惑の表現（「分からない」「よくわからない」）
+- 避けるような回答（「頑張ります」のみ）
+- 関係ない回答
+- 極端に短い回答
+
+true（説明が必要）またはfalse（理解している）で回答してください。"""),
+            HumanMessage(content=f"概念: {abstract_concept}\n新人の回答: {user_response}\n\n概念説明が必要ですか？")
+        ]
+        
+        try:
+            response = await self.llm.ainvoke(prompt_messages)
+            return "true" in response.content.lower()
+        except Exception:
+            # エラーの場合は短い回答なら説明が必要と判定
+            return len(user_response.strip()) < 10
+    
+    async def _generate_educational_explanation(
+        self,
+        instruction: Dict[str, Any],
+        user_response: str
+    ) -> str:
+        """教育的な概念説明を生成"""
+        
+        abstract_concept = instruction.get("abstract_concept", "")
+        original_text = instruction.get("original_text", "")
+        
+        prompt_messages = [
+            SystemMessage(content=f"""新人営業マンが「{abstract_concept}」について理解できずにいます。
+
+新人にとって分かりやすい説明を作成してください：
+
+説明に含める要素：
+1. 概念の基本的な定義（専門用語を避けて）
+2. 営業活動での具体例（3つ程度）
+3. なぜ重要なのか（具体的なメリット）
+4. よくある誤解の訂正
+5. 新人でも今日から意識できるポイント
+
+親しみやすく、分かりやすい説明でお願いします。
+上司の発言: "{original_text}"
+新人の困惑: "{user_response}" """),
+            HumanMessage(content=f"「{abstract_concept}」について、新人営業マンに分かりやすく説明してください。")
+        ]
+        
+        try:
+            response = await self.llm.ainvoke(prompt_messages)
+            return response.content.strip()
+        except Exception:
+            return f"""「{abstract_concept}」について説明しますね。
+
+これは営業活動において重要な要素の一つです。具体的には、お客様とのやり取りや提案活動で意識すべきポイントを指しています。
+
+まずは「{abstract_concept}」がどういうものか、一緒に具体的に考えていきましょう。"""
