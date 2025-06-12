@@ -187,7 +187,13 @@ class MockDialogueManager:
     ) -> Dict[str, Any]:
         """ユーザー回答の処理"""
         if session_id not in self.sessions:
-            raise ValueError(f"Session {session_id} not found")
+            # セッションが存在しない場合は自動的に作成
+            self.sessions[session_id] = {
+                "messages": [],
+                "context": {},
+                "stage": "initial",
+                "created_at": datetime.utcnow().isoformat()
+            }
         
         session = self.sessions[session_id]
         

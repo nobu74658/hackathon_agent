@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     
     # LLM設定
-    USE_MOCK_LLM: bool = True  # 開発・テスト時はモックを使用
+    USE_MOCK_LLM: bool = False  # 実際のLLMを使用
     
     # OpenAI
     OPENAI_API_KEY: str = ""  # 実際のキーが必要な場合のみ設定

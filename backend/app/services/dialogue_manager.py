@@ -134,8 +134,9 @@ class DialogueManager:
     
     async def _evaluate_completeness(self, context: Dict[str, Any]) -> int:
         """情報の充足度を評価"""
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", """営業スキル向上のアクションプラン作成に必要な情報の充足度を評価してください。
+        context_str = json.dumps(context, ensure_ascii=False, indent=2)
+        messages = [
+            {"role": "system", "content": """営業スキル向上のアクションプラン作成に必要な情報の充足度を評価してください。
             
             以下の観点で評価してください：
             1. 現在の課題や悩みが明確か
@@ -144,12 +145,11 @@ class DialogueManager:
             4. 現在のスキルレベルが把握できるか
             5. 利用可能なリソースや制約が明確か
             
-            0-100のスコアで評価してください。
-            """),
-            ("user", f"会話履歴：\n{json.dumps(context, ensure_ascii=False)}\n\n充足度スコア（0-100）:")
-        ])
+            0-100のスコアで評価してください。数字のみ回答してください。"""},
+            {"role": "user", "content": f"会話履歴：\n{context_str}\n\n充足度スコア（0-100）:"}
+        ]
         
-        response = await self.llm.ainvoke(prompt.format_messages())
+        response = await self.llm.ainvoke(messages)
         try:
             score = int(response.content.strip())
             return min(max(score, 0), 100)  # 0-100の範囲に制限
@@ -161,37 +161,43 @@ class DialogueManager:
         context: Dict[str, Any]
     ) -> List[str]:
         """フォローアップ質問を生成"""
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", """これまでの会話内容を踏まえて、
-            アクションプラン作成に必要な追加情報を収集するための質問を生成してください。
+        # メモリから履歴を取得
+        memory = await self.memory_service.get_or_create_memory(context["session_id"])
+        messages = memory.chat_memory.messages
+        
+        # 会話履歴を文字列に変換
+        chat_history = "\n".join([
+            f"{msg.type}: {msg.content}" for msg in messages[-5:]  # 最新5メッセージ
+        ])
+        
+        prompt_messages = [
+            {"role": "system", "content": """これまでの会話内容を踏まえて、アクションプラン作成に必要な追加情報を収集するための質問を生成してください。
             
             以下の点に注意してください：
             1. すでに得られた情報を踏まえて、より具体的な質問をする
             2. 実践的で測定可能なアクションにつながる情報を収集する
             3. 営業スキル向上に直接関連する質問をする
             
-            {format_instructions}
-            """),
-            MessagesPlaceholder(variable_name="chat_history"),
-            ("user", "追加で必要な情報を収集するための質問を生成してください。")
-        ])
+            質問は1行ずつ「Q: 」で始めて3-5個回答してください。"""},
+            {"role": "user", "content": f"会話履歴：\n{chat_history}\n\n追加で必要な情報を収集するための質問を生成してください。"}
+        ]
         
-        # メモリから履歴を取得
-        memory = await self.memory_service.get_or_create_memory(context["session_id"])
-        messages = memory.chat_memory.messages
+        response = await self.llm.ainvoke(prompt_messages)
         
-        chain = (
-            {
-                "chat_history": lambda _: messages,
-                "format_instructions": lambda _: self.question_parser.get_format_instructions()
-            }
-            | prompt
-            | self.llm
-            | self.question_parser
-        )
+        # レスポンスから質問を抽出
+        questions = []
+        for line in response.content.split('\n'):
+            line = line.strip()
+            if line.startswith('Q:'):
+                questions.append(line[2:].strip())
+            elif line.startswith('質問'):
+                questions.append(line.split(':', 1)[-1].strip())
         
-        response = await chain.ainvoke({})
-        return response.questions
+        # 最低1つの質問を保証
+        if not questions:
+            questions = ["これまでの内容について、もう少し詳しく教えていただけますか？"]
+        
+        return questions[:5]  # 最大5個まで
     
     async def _generate_action_plan(
         self,
