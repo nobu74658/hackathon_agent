@@ -201,27 +201,52 @@ class DialogueManager:
         
         # 1on1の特徴的なパターンを検出
         one_on_one_indicators = [
-            # 対話形式
+            # 基本的な対話形式
             "：" in content and content.count("：") >= 2,  # 複数の話者
-            # 上司からの典型的なフィードバック
+            len(content) > 100,  # 長めの内容
+            
+            # 営業活動関連
             "距離を詰める" in content,
             "信頼関係" in content,
             "温度感" in content,
             "課題に寄り添った" in content,
-            "もう少し" in content and "といいね" in content,
-            "がカギだと思う" in content,
-            "を意識して" in content,
-            # 営業活動への言及
             "営業活動" in content and "調子" in content,
             "新規アポ" in content,
             "成約" in content,
-            # 長めのテキスト（1on1の内容は通常長い）
-            len(content) > 100
+            
+            # 上司からのフィードバック・指導パターン
+            "もう少し" in content and ("といいね" in content or "といいかな" in content),
+            "がカギだと思う" in content,
+            "を意識して" in content,
+            "感覚を磨いて" in content or "数こなして" in content,
+            
+            # 提案資料・成果物フィードバック
+            "提案資料" in content,
+            "伝わる資料" in content or "わかりやすく" in content,
+            "ストーリー性" in content,
+            "センス" in content and ("資料" in content or "提案" in content),
+            "空気感" in content,
+            "洗練" in content,
+            
+            # 一般的な上司・部下の対話パターン
+            "確認したよ" in content or "確認しました" in content,
+            "フィードバック" in content,
+            "もう一歩" in content,
+            "改善" in content and ("できる" in content or "していこう" in content),
+            "頑張ります" in content and ("分かりました" in content or "ありがとうございます" in content),
+            
+            # 抽象的な指示パターン
+            "曖昧" in content or "抽象的" in content,
+            "具体的に" in content and "どう" in content,
+            "例えば" in content and "どこを" in content,
+            
+            # 思考や内心の描写（1on1ログの特徴）
+            "（" in content and "）" in content and content.count("（") >= 2
         ]
         
-        # 複数の指標が当てはまる場合は1on1と判定
+        # 複数の指標が当てはまる場合は1on1と判定（閾値を2に下げる）
         matching_indicators = sum(1 for indicator in one_on_one_indicators if indicator)
-        return matching_indicators >= 3
+        return matching_indicators >= 2
     
     def _determine_dialogue_stage(self, context: Dict[str, Any], completeness_score: int) -> str:
         """対話の段階を判定"""
@@ -516,20 +541,25 @@ class DialogueManager:
 - 「もっと〜する」「〜を意識する」「〜していけるといいね」のような表現
 - 具体的な行動手順が明確でない改善提案
 
+重要: 質問生成時の文脈制約のため、指示の具体的なスコープと境界を明確に定義してください。
+
 必ず以下のJSON形式で回答してください：
 ```json
 {
   "abstract_instructions": [
     {
       "original_text": "上司の発言そのまま",
-      "abstract_concept": "抽象的な概念（例：距離を詰める、信頼関係構築）",
-      "category": "カテゴリ（customer_relationship, trust_building, communication等）",
+      "abstract_concept": "抽象的な概念（例：距離を詰める、信頼関係構築、伝わる資料作成）",
+      "specific_scope": "この指示が対象とする具体的な範囲（例：提案資料の作成技術、顧客との会話術）",
+      "excluded_areas": ["この指示に含まれない関連領域1", "含まれない関連領域2"],
+      "key_elements": ["指示に含まれる主要要素1", "主要要素2", "主要要素3"],
+      "category": "カテゴリ（customer_relationship, trust_building, document_creation等）",
       "urgency": "優先度（high, medium, low）"
     }
   ]
 }
 ```"""),
-            HumanMessage(content=f"以下の1on1内容から抽象的な指示を特定してください：\n\n{one_on_one_content}")
+            HumanMessage(content=f"以下の1on1内容から抽象的な指示を特定し、各指示の具体的なスコープと境界を明確に定義してください：\n\n{one_on_one_content}")
         ]
         
         try:
@@ -618,24 +648,50 @@ class DialogueManager:
         
         abstract_concept = instruction.get("abstract_concept", "")
         original_text = instruction.get("original_text", "")
+        specific_scope = instruction.get("specific_scope", "")
+        excluded_areas = instruction.get("excluded_areas", [])
+        key_elements = instruction.get("key_elements", [])
+        
+        # 除外領域の文字列を構築
+        excluded_text = ""
+        if excluded_areas:
+            excluded_text = f"\n❌ 除外すべき領域: {', '.join(excluded_areas)}"
+        
+        # 主要要素の文字列を構築
+        key_elements_text = ""
+        if key_elements:
+            key_elements_text = f"\n🔑 重視すべき要素: {', '.join(key_elements)}"
         
         prompt_messages = [
             SystemMessage(content=f"""新人営業マンが上司から「{abstract_concept}」という抽象的な指示を受けました。
-この指示を具体的な行動レベルまで落とし込むために、最初の深掘り質問を3-4個生成してください。
+【重要な制約】: 質問は必ず「{abstract_concept}」の文脈内でのみ生成してください。
 
-質問の目的：
-- 新人がどのような場面で困っているのかを特定
-- 現在の行動パターンを把握
-- 具体的な改善点を見つける
+上司の具体的な指示内容: "{original_text}"
+対象スコープ: {specific_scope if specific_scope else abstract_concept}{excluded_text}{key_elements_text}
 
-質問は以下の形式で：
-1. 現状把握の質問
-2. 困難な場面の特定
-3. 理想的な状態の確認
-4. 具体的な行動への言及
+【厳密な文脈制約】:
+🎯 質問は「{abstract_concept}」に特化した内容のみ
+❌ 関連しそうでも異なる領域の質問は絶対禁止
+✅ 「{abstract_concept}」の具体的な実行方法・経験・感覚のみを聞く
 
-1行ずつ「Q: 」で始まる形式で回答してください。"""),
-            HumanMessage(content=f"上司の指示: \"{original_text}\"\n抽象概念: {abstract_concept}\n\n深掘り質問を生成してください。")
+【絶対に避けるべき質問】:
+❌ 上司の意図推測: 「上司が求める〜とは何だと思いますか？」
+❌ 他人の期待: 「〜さんが期待している〜は何ですか？」  
+❌ 文脈外の質問: 「{abstract_concept}」以外の営業スキルについて
+
+【新人営業マン自身に焦点を当てた良い質問（「{abstract_concept}」限定）】:
+✅ 「{abstract_concept}」の実体験: 「これまでに{abstract_concept}で困った経験はありますか？」
+✅ 「{abstract_concept}」の現在の行動: 「普段{abstract_concept}をする時、どうしていますか？」
+✅ 「{abstract_concept}」の感覚: 「{abstract_concept}がうまくいった時、どんな感じでしたか？」
+✅ 「{abstract_concept}」の実行可能な行動: 「明日から{abstract_concept}を改善するとしたら？」
+
+例：「{abstract_concept}」について
+❌ 悪い質問: 「上司が求める{abstract_concept}とは何だと思いますか？」
+❌ 文脈外の質問: 「コミュニケーション全般についてどう思いますか？」（{abstract_concept}が資料作成の場合）
+✅ 良い質問: 「これまでに{abstract_concept}で困った経験はありますか？」
+
+1行ずつ「Q: 」で始まる形式で、必ず「{abstract_concept}」の文脈内で回答してください。"""),
+            HumanMessage(content=f"上司の指示: \"{original_text}\"\n抽象概念: {abstract_concept}\n\n「{abstract_concept}」に特化した深掘り質問を生成してください。")
         ]
         
         try:
@@ -655,15 +711,16 @@ class DialogueManager:
                         questions.append(line)
             
             return questions[:4] if questions else [
-                f"「{abstract_concept}」について、どのような場面で最も困難を感じますか？",
-                f"現在、{abstract_concept}のためにどのような取り組みをしていますか？",
-                f"理想的には{abstract_concept}がどのような状態になれば良いと思いますか？"
+                f"これまでに{abstract_concept}で困った経験はありますか？どんな場面でしたか？",
+                f"普段、{abstract_concept}を意識して何かしていることはありますか？",
+                f"{abstract_concept}がうまくいった時と困った時、自分でも違いを感じますか？",
+                f"明日から{abstract_concept}を改善するとしたら、何から始めてみたいですか？"
             ]
             
         except Exception:
             return [
-                f"「{abstract_concept}」について、どのような場面で最も困難を感じますか？",
-                f"現在、{abstract_concept}のためにどのような取り組みをしていますか？"
+                f"これまでに{abstract_concept}で困った経験はありますか？",
+                f"普段、{abstract_concept}について何か意識していることはありますか？"
             ]
     
     async def _continue_one_on_one_clarification(
@@ -875,6 +932,20 @@ class DialogueManager:
         """より深い具体化質問を生成"""
         
         abstract_concept = instruction.get("abstract_concept", "")
+        specific_scope = instruction.get("specific_scope", "")
+        excluded_areas = instruction.get("excluded_areas", [])
+        key_elements = instruction.get("key_elements", [])
+        original_text = instruction.get("original_text", "")
+        
+        # 除外領域の文字列を構築
+        excluded_text = ""
+        if excluded_areas:
+            excluded_text = f"\n❌ 除外すべき領域: {', '.join(excluded_areas)}"
+        
+        # 主要要素の文字列を構築
+        key_elements_text = ""
+        if key_elements:
+            key_elements_text = f"\n🔑 重視すべき要素: {', '.join(key_elements)}"
         
         # 会話履歴をテキスト化
         conversation_text = "\\n".join([
@@ -883,25 +954,39 @@ class DialogueManager:
         
         prompt_messages = [
             SystemMessage(content=f"""新人営業マンの回答はまだ抽象的です（具体性: {concreteness_score}%）。
-更に具体的な質問をして、明日から実行できるレベルまで落とし込んでください。
+【重要な制約】: 質問は必ず「{abstract_concept}」の文脈内でのみ生成してください。
 
 対象の抽象的指示: "{abstract_concept}"
+上司の具体的な指示内容: "{original_text}"
+対象スコープ: {specific_scope if specific_scope else abstract_concept}{excluded_text}{key_elements_text}
 不足している要素: {missing_details}
 
-より深い質問の観点：
-- 具体的な場面・シチュエーション
-- 実行する頻度とタイミング
-- 具体的な手順・ステップ
-- 測定・確認方法
-- 必要なツールや準備
+【厳密な文脈制約】:
+🎯 深掘り質問は「{abstract_concept}」に特化した内容のみ
+❌ 関連しそうでも異なる領域の質問は絶対禁止
+✅ 「{abstract_concept}」の具体的な実行方法・経験・手順のみを深掘り
 
-「相手に合わせたトーンと話し方を意識する」のような抽象的な回答を避け、
-「商談開始時に、相手の話すスピードに合わせて自分も話すスピードを調整し、
-相手が専門用語を使う場合は同レベルの用語で、使わない場合は分かりやすい言葉で説明する」
-のような具体性を引き出してください。
+【絶対に避けるべき深掘り質問】:
+❌ 上司の意図推測: 「上司が言いたかったことは何だと思いますか？」
+❌ 他人の期待: 「お客様が期待している〜は何ですか？」
+❌ 会社の方針: 「会社として求められる〜は？」
+❌ 文脈外の質問: 「{abstract_concept}」以外の領域について
+
+【新人営業マン自身に焦点を当てた深掘り質問（「{abstract_concept}」限定）】:
+✅ 「{abstract_concept}」の具体的体験: 「これまでに{abstract_concept}をした経験はありますか？」
+✅ 「{abstract_concept}」の現在の感覚: 「{abstract_concept}をする時、どんな風に感じますか？」
+✅ 「{abstract_concept}」の実行可能な行動: 「明日から{abstract_concept}を改善するとしたら、何分くらい？」
+✅ 「{abstract_concept}」での自分の判断: 「{abstract_concept}でAとB、どちらを選びますか？」
+
+【「{abstract_concept}」に特化した深掘り質問例】:
+- 「これまでに{abstract_concept}がうまくいった経験はありますか？その時何をしていましたか？」
+- 「普段{abstract_concept}をする時、一番困るのはどんな場面ですか？」
+- 「明日{abstract_concept}を改善するとしたら、何から始めますか？」
+
+注意: 質問は必ず「{abstract_concept}」の範囲内で生成し、他の営業スキルやコミュニケーション全般に逸脱しないこと。
 
 1行ずつ「Q: 」で始まる形式で2-3個の質問を生成してください。"""),
-            HumanMessage(content=f"これまでの会話：\\n{conversation_text}\\n\\nより具体的にするための深掘り質問を生成してください。")
+            HumanMessage(content=f"これまでの会話：\\n{conversation_text}\\n\\n「{abstract_concept}」に特化したより具体的な深掘り質問を生成してください。")
         ]
         
         try:
@@ -918,16 +1003,16 @@ class DialogueManager:
                         questions.append(line)
             
             return questions[:3] if questions else [
-                f"「{abstract_concept}」を実行する具体的な場面を教えてください（どんな時に、誰に対して、どのように？）",
-                f"その行動をどのくらいの頻度で実行しますか？（毎日、週1回、商談毎など）",
-                f"うまくできているかどうかを、どのように確認・測定しますか？"
+                f"これまでに{abstract_concept}がうまくいった経験はありますか？その時何をしていましたか？",
+                f"普段{abstract_concept}で一番困るのはどんな場面ですか？",
+                f"明日から{abstract_concept}を改善するために、何分くらい時間をかけてみますか？"
             ]
             
         except Exception:
             return [
-                f"「{abstract_concept}」を実行する具体的な場面を教えてください",
-                f"その行動の具体的な手順を教えてください",
-                f"成果をどのように測定しますか？"
+                f"これまでに{abstract_concept}で困った経験はありますか？",
+                f"普段{abstract_concept}について何か気をつけていることはありますか？",
+                f"明日から何か新しいことを試してみるとしたら、何をしますか？"
             ]
     
     async def _generate_final_action_plan_from_session(
