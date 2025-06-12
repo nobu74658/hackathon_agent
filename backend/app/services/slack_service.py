@@ -169,6 +169,68 @@ class SlackService:
             elif response["type"] == "knowledge_provision":
                 # 📚 社内ナレッジ提供
                 formatted_response = self._format_knowledge_provision_for_slack(response)
+                
+                logger.info(f"Knowledge provision response: upload_file={response.get('_upload_file')}")
+                logger.info(f"Response keys: {list(response.keys())}")
+                
+                # デバッグ: knowledge_responseの内容を確認
+                knowledge_response = response.get("knowledge_response", "")
+                logger.info(f"Knowledge response contains markdown: {'```markdown' in knowledge_response}")
+                logger.info(f"Knowledge response preview: {knowledge_response[:200]}...")
+                
+                # ファイルアップロードが必要な場合
+                if response.get("_upload_file"):
+                    channel_id = event.get("channel")
+                    logger.info(f"Channel ID for upload: {channel_id}")
+                    
+                    if channel_id:
+                        file_content = response.get("_file_content", "")
+                        logger.info(f"File content length: {len(file_content)}")
+                        
+                        await self._upload_markdown_file(
+                            channel_id,
+                            file_content,
+                            response.get("_file_name", "template.md"),
+                            response.get("original_request", "テンプレートファイル")
+                        )
+                    else:
+                        logger.error("No channel ID found for file upload")
+                        await say("⚠️ ファイルアップロード用のチャンネル情報が取得できませんでした。")
+                else:
+                    logger.info("No file upload flag set")
+                    
+                    # 強制的にファイルアップロードをテスト（デバッグ用）
+                    if "具体的" in text and "資料" in text and "例" in text:
+                        logger.info("Forcing file upload for debugging")
+                        
+                        # テスト用のマークダウンコンテンツ
+                        test_markdown = """# 提案資料テンプレート
+
+## 基本情報
+**顧客名**: [会社名]
+**提案日**: [日付]
+
+## 課題
+- 現在の課題1
+- 現在の課題2
+
+## 解決策
+- 解決策1
+- 解決策2
+
+## 次のステップ
+- アクション1
+- アクション2
+"""
+                        
+                        channel_id = event.get("channel")
+                        if channel_id:
+                            await self._upload_markdown_file(
+                                channel_id,
+                                test_markdown,
+                                "test_template.md",
+                                "テスト用提案資料テンプレート"
+                            )
             elif response["type"] == "request_acknowledgment":
                 # 📋 要求受理確認
                 formatted_response = self._format_request_acknowledgment_for_slack(response)
@@ -479,16 +541,71 @@ class SlackService:
         follow_up = response.get("follow_up", "")
         stage_description = response.get("stage_description", "")
         
-        formatted = f"📚 **{stage_description}**\n\n"
-        formatted += f"✨ **ご要求**: {original_request}\n\n"
-        formatted += f"{knowledge_response}\n\n"
-        formatted += f"💡 **次のステップ**\n{follow_up}"
+        # マークダウンファイルが含まれているかチェック
+        logger.info(f"Checking for markdown in knowledge_response: {'```markdown' in knowledge_response}")
         
-        # 文字数制限対応
-        if len(formatted) > 3000:
-            formatted = formatted[:2900] + "\n\n_（詳細が省略されています）_"
+        if "```markdown" in knowledge_response:
+            # ファイルアップロード用の処理をトリガー
+            formatted = f"📚 **{stage_description}**\n\n"
+            formatted += f"✨ **ご要求**: {original_request}\n\n"
+            formatted += "📁 **実用的なテンプレートファイルを作成中...**\n"
+            formatted += "すぐにダウンロード可能なマークダウンファイルとしてお送りします！\n\n"
+            formatted += f"💡 **次のステップ**\n{follow_up}"
+            
+            # ファイルアップロードフラグを設定
+            response["_upload_file"] = True
+            file_content = self._extract_markdown_content(knowledge_response)
+            file_name = self._generate_file_name(original_request)
+            
+            response["_file_content"] = file_content
+            response["_file_name"] = file_name
+            
+            logger.info(f"Set upload flags: file_name={file_name}, content_length={len(file_content)}")
+        else:
+            # 通常のテキスト表示
+            formatted = f"📚 **{stage_description}**\n\n"
+            formatted += f"✨ **ご要求**: {original_request}\n\n"
+            formatted += f"{knowledge_response}\n\n"
+            formatted += f"💡 **次のステップ**\n{follow_up}"
+            
+            # 文字数制限対応
+            if len(formatted) > 3000:
+                formatted = formatted[:2900] + "\n\n_（詳細が省略されています）_"
         
         return formatted
+    
+    def _extract_markdown_content(self, knowledge_response: str) -> str:
+        """レスポンスからマークダウンコンテンツを抽出"""
+        import re
+        
+        # ```markdown と ``` の間のコンテンツを抽出
+        pattern = r'```markdown\n(.*?)\n```'
+        matches = re.findall(pattern, knowledge_response, re.DOTALL)
+        
+        if matches:
+            return matches[0].strip()
+        
+        # マークダウンブロックが見つからない場合は全体を返す
+        return knowledge_response
+    
+    def _generate_file_name(self, original_request: str) -> str:
+        """要求内容に基づいてファイル名を生成"""
+        import re
+        from datetime import datetime
+        
+        # 要求から適切なファイル名を生成
+        if "提案" in original_request:
+            base_name = "proposal_template"
+        elif "資料" in original_request:
+            base_name = "document_template"
+        elif "テンプレート" in original_request:
+            base_name = "template"
+        else:
+            base_name = "sales_material"
+        
+        # 日時を追加
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+        return f"{base_name}_{timestamp}.md"
     
     def _format_request_acknowledgment_for_slack(self, response: Dict[str, Any]) -> str:
         """要求受理確認をSlack用にフォーマット"""
@@ -499,6 +616,64 @@ class SlackService:
         formatted += "💭 より良いサポートのため、対話を続けさせていただきます。"
         
         return formatted
+    
+    async def _upload_markdown_file(
+        self,
+        channel_id: str,
+        file_content: str,
+        file_name: str,
+        description: str
+    ):
+        """マークダウンファイルをSlackにアップロード"""
+        import tempfile
+        import os
+        
+        try:
+            # 一時ファイルを作成
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as temp_file:
+                temp_file.write(file_content)
+                temp_file_path = temp_file.name
+            
+            logger.info(f"Created temp file: {temp_file_path} for upload")
+            
+            # Slackにファイルをアップロード
+            result = self.app.client.files_upload_v2(
+                channel=channel_id,
+                file=temp_file_path,
+                filename=file_name,
+                title=f"📝 {description}",
+                initial_comment=f"📁 **{description}をファイルでお送りします！**\n\n"
+                               f"• ダウンロードして編集可能\n"
+                               f"• [変更箇所]を実際の内容に置き換えてご使用ください\n"
+                               f"• 印刷やPDF化にも対応\n\n"
+                               f"💡 このテンプレートを基に対話を続けて、より具体的なアクションプランを作成しましょう！"
+            )
+            
+            # 一時ファイルを削除
+            os.unlink(temp_file_path)
+            
+            logger.info(f"Successfully uploaded file: {file_name} to channel: {channel_id}")
+            
+        except Exception as e:
+            logger.error(f"Failed to upload file: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+            
+            # 権限エラーの場合の特別メッセージ
+            error_message = str(e)
+            if "missing_scope" in error_message or "files:write" in error_message:
+                fallback_text = f"📋 **Slackファイルアップロード権限が必要です**\n\n⚠️ Bot設定で`files:write`権限を追加してください。\n\n**代替案として、以下のマークダウンをコピーしてファイルに保存してください：**\n\n```markdown\n{file_content[:1500]}...\n```"
+            else:
+                fallback_text = f"⚠️ ファイルアップロードに失敗しました。テキスト形式で送信します。\n\n```markdown\n{file_content[:1500]}...\n```"
+            
+            # ファイルアップロードに失敗した場合はテキストで送信
+            try:
+                await self.app.client.chat_postMessage(
+                    channel=channel_id,
+                    text=fallback_text
+                )
+            except Exception as say_error:
+                logger.error(f"Failed to send fallback message: {say_error}")
     
     async def get_handler(self):
         """FastAPI用のハンドラーを取得"""

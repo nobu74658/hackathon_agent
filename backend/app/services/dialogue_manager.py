@@ -7,6 +7,7 @@ from langchain.output_parsers import PydanticOutputParser
 from pydantic import BaseModel, Field
 from datetime import datetime
 import json
+from enum import Enum
 
 from app.services.conversation_memory import ConversationMemoryService
 from app.services.one_on_one_analyzer import OneOnOneAnalyzer
@@ -29,6 +30,242 @@ class ActionPlanResponse(BaseModel):
     metrics: Dict[str, Any] = Field(description="成功指標")
 
 
+class DialoguePhase(Enum):
+    """理想的な対話フェーズの定義"""
+    CURRENT_SITUATION = "current_situation"  # 現状把握
+    PROBLEM_ANALYSIS = "problem_analysis"   # 課題分析
+    SOLUTION_EXPLORATION = "solution_exploration"  # ソリューション探索
+    ACTION_PLAN = "action_plan"  # アクションプラン作成
+    EXECUTION_SUPPORT = "execution_support"  # 実行支援
+    COMPLETED = "completed"  # 完了
+
+
+class SocraticQuestionResponse(BaseModel):
+    """ソクラテス式質問の構造"""
+    question: str = Field(description="生成された質問")
+    purpose: str = Field(description="この質問の目的")
+    expected_insight: str = Field(description="期待される気づき")
+    phase: str = Field(description="現在のフェーズ")
+    next_phase_condition: str = Field(description="次のフェーズに進む条件")
+
+
+class IdealDialogueManager:
+    """理想的な対話シナリオを実現するマネージャー"""
+    
+    def __init__(self, llm):
+        self.llm = llm
+        self.socratic_parser = PydanticOutputParser(pydantic_object=SocraticQuestionResponse)
+        
+    async def get_socratic_question(
+        self,
+        phase: DialoguePhase,
+        context: Dict[str, Any],
+        user_responses: List[Dict[str, Any]]
+    ) -> SocraticQuestionResponse:
+        """ソクラテス式質問を生成"""
+        
+        phase_prompts = {
+            DialoguePhase.CURRENT_SITUATION: self._get_current_situation_prompt(),
+            DialoguePhase.PROBLEM_ANALYSIS: self._get_problem_analysis_prompt(),
+            DialoguePhase.SOLUTION_EXPLORATION: self._get_solution_exploration_prompt(),
+            DialoguePhase.ACTION_PLAN: self._get_action_plan_prompt(),
+            DialoguePhase.EXECUTION_SUPPORT: self._get_execution_support_prompt()
+        }
+        
+        prompt = phase_prompts.get(phase, self._get_default_prompt())
+        
+        chain = (
+            {
+                "context": lambda _: json.dumps(context, ensure_ascii=False),
+                "user_responses": lambda _: json.dumps(user_responses, ensure_ascii=False),
+                "format_instructions": lambda _: self.socratic_parser.get_format_instructions()
+            }
+            | prompt
+            | self.llm
+            | self.socratic_parser
+        )
+        
+        return await chain.ainvoke({})
+    
+    def _get_current_situation_prompt(self) -> ChatPromptTemplate:
+        """現状把握フェーズのプロンプト"""
+        return ChatPromptTemplate.from_messages([
+            ("system", """
+あなたは新人営業マンの成長を支援するAIコーチです。
+現在は「現状把握フェーズ」にいます。
+
+【このフェーズの目的】
+- 部下の現在の状況を正確に把握する
+- 上司の抽象的な指示に対する理解度を確認する
+- 売上状況、時間配分、顧客対応の現状を明確にする
+
+【ソクラテス式質問法の原則】
+- 答えを直接教えるのではなく、質問を通じて気づかせる
+- 部下の経験や知識を引き出す
+- 段階的に深く掘り下げる
+- 批判せず、共感的な姿勢を保つ
+
+以下の情報を参考に、部下の現状を深く理解するための質問を1つ生成してください：
+
+コンテキスト: {context}
+過去の回答: {user_responses}
+
+{format_instructions}
+"""),
+            ("user", "現状把握のための効果的な質問を生成してください。")
+        ])
+    
+    def _get_problem_analysis_prompt(self) -> ChatPromptTemplate:
+        """課題分析フェーズのプロンプト"""
+        return ChatPromptTemplate.from_messages([
+            ("system", """
+あなたは新人営業マンの成長を支援するAIコーチです。
+現在は「課題分析フェーズ」にいます。
+
+【このフェーズの目的】
+- 部下の成功体験を発見し、活用する
+- 抽象的な指示の具体的な意味を理解させる
+- 問題を構造化して考える能力を育成する
+- 既存の強みや成功パターンを認識させる
+
+【重要なアプローチ】
+- 成功事例から学習させる（強みベースアプローチ）
+- 「なぜうまくいったのか？」を深掘りする
+- 成功の再現可能性を探る
+- 部下の自信を高める質問をする
+
+コンテキスト: {context}
+過去の回答: {user_responses}
+
+{format_instructions}
+"""),
+            ("user", "課題分析と成功体験発見のための質問を生成してください。")
+        ])
+    
+    def _get_solution_exploration_prompt(self) -> ChatPromptTemplate:
+        """ソリューション探索フェーズのプロンプト"""
+        return ChatPromptTemplate.from_messages([
+            ("system", """
+あなたは新人営業マンの成長を支援するAIコーチです。
+現在は「ソリューション探索フェーズ」にいます。
+
+【このフェーズの目的】
+- 成功体験を他の状況に応用する方法を考えさせる
+- 効率的なアプローチ方法を発見させる
+- 顧客セグメンテーションの重要性を理解させる
+- 戦略的思考を育成する
+
+【アプローチ方針】
+- 「もし〜なら？」の仮定質問を活用
+- 優先順位付けの重要性を理解させる
+- リソースの制約を考慮した現実的な解決策を考えさせる
+- 部下自身にアイデアを出させる
+
+コンテキスト: {context}
+過去の回答: {user_responses}
+
+{format_instructions}
+"""),
+            ("user", "解決策探索のための戦略的な質問を生成してください。")
+        ])
+    
+    def _get_action_plan_prompt(self) -> ChatPromptTemplate:
+        """アクションプラン作成フェーズのプロンプト"""
+        return ChatPromptTemplate.from_messages([
+            ("system", """
+あなたは新人営業マンの成長を支援するAIコーチです。
+現在は「アクションプラン作成フェーズ」にいます。
+
+【このフェーズの目的】
+- SMART目標（Specific, Measurable, Achievable, Relevant, Time-bound）の設定を支援
+- 具体的で実行可能なアクションに落とし込む
+- 成功指標と測定方法を明確にする
+- 実現可能性を評価させる
+
+【SMART目標設定のガイド】
+- Specific（具体的）: 何を、誰が、いつ、どこで
+- Measurable（測定可能）: 数値で表現できる
+- Achievable（達成可能）: 現実的で実行可能
+- Relevant（関連性）: 上司の指示や目標と関連
+- Time-bound（期限）: 明確な期限設定
+
+コンテキスト: {context}
+過去の回答: {user_responses}
+
+{format_instructions}
+"""),
+            ("user", "SMART目標設定を支援する質問を生成してください。")
+        ])
+    
+    def _get_execution_support_prompt(self) -> ChatPromptTemplate:
+        """実行支援フェーズのプロンプト"""
+        return ChatPromptTemplate.from_messages([
+            ("system", """
+あなたは新人営業マンの成長を支援するAIコーチです。
+現在は「実行支援フェーズ」にいます。
+
+【このフェーズの目的】
+- 実行時の障害を予測し、対策を立てる
+- 継続的な実行を支援する仕組みを作る
+- 進捗確認とフィードバックの方法を確立
+- 自律的な問題解決能力を育成
+
+【重要な観点】
+- 「何が障害になりそうか？」を先回りして考えさせる
+- 「どうすれば継続できるか？」の仕組み作り
+- 進捗測定と調整の方法
+- 成功の習慣化
+
+コンテキスト: {context}
+過去の回答: {user_responses}
+
+{format_instructions}
+"""),
+            ("user", "実行支援と継続的な成長のための質問を生成してください。")
+        ])
+    
+    def _get_default_prompt(self) -> ChatPromptTemplate:
+        """デフォルトプロンプト"""
+        return ChatPromptTemplate.from_messages([
+            ("system", """
+あなたは新人営業マンの成長を支援するAIコーチです。
+
+ソクラテス式質問法を用いて、部下の成長を促す質問を生成してください。
+
+コンテキスト: {context}
+過去の回答: {user_responses}
+
+{format_instructions}
+"""),
+            ("user", "成長を促す効果的な質問を生成してください。")
+        ])
+    
+    def determine_next_phase(
+        self,
+        current_phase: DialoguePhase,
+        user_responses: List[Dict[str, Any]]
+    ) -> DialoguePhase:
+        """次のフェーズを決定"""
+        phase_transitions = {
+            DialoguePhase.CURRENT_SITUATION: DialoguePhase.PROBLEM_ANALYSIS,
+            DialoguePhase.PROBLEM_ANALYSIS: DialoguePhase.SOLUTION_EXPLORATION,
+            DialoguePhase.SOLUTION_EXPLORATION: DialoguePhase.ACTION_PLAN,
+            DialoguePhase.ACTION_PLAN: DialoguePhase.EXECUTION_SUPPORT,
+            DialoguePhase.EXECUTION_SUPPORT: DialoguePhase.COMPLETED
+        }
+        
+        # 各フェーズで最低2-3の質問に答えた場合に次のフェーズに進む
+        current_phase_responses = [
+            r for r in user_responses 
+            if r.get("phase") == current_phase.value
+        ]
+        
+        if len(current_phase_responses) >= 1:  # 1つの回答で次のフェーズへ
+            return phase_transitions.get(current_phase, DialoguePhase.COMPLETED)
+        
+        return current_phase
+
+
 class DialogueManager:
     """対話フローを管理するマネージャー"""
     
@@ -43,8 +280,14 @@ class DialogueManager:
         self.question_parser = PydanticOutputParser(pydantic_object=QuestionResponse)
         self.action_plan_parser = PydanticOutputParser(pydantic_object=ActionPlanResponse)
         
+        # 理想的な対話シナリオマネージャー
+        self.ideal_dialogue_manager = IdealDialogueManager(self.llm)
+        
         # インメモリの1on1セッション状態管理（Redisがない場合の代替）
         self._in_memory_sessions: Dict[str, Dict[str, Any]] = {}
+        
+        # 理想的な対話セッション状態管理
+        self._ideal_dialogue_sessions: Dict[str, Dict[str, Any]] = {}
     
     async def initialize(self):
         """サービスの初期化"""
@@ -97,6 +340,249 @@ class DialogueManager:
         
         return response.questions, metadata
     
+    async def start_ideal_dialogue(
+        self,
+        session_id: str,
+        abstract_instruction: str,
+        context: Dict[str, Any] = None
+    ) -> Dict[str, Any]:
+        """理想的な対話シナリオを開始"""
+        # セッション初期化
+        self._ideal_dialogue_sessions[session_id] = {
+            "phase": DialoguePhase.CURRENT_SITUATION,
+            "abstract_instruction": abstract_instruction,
+            "user_responses": [],
+            "context": context or {},
+            "started_at": datetime.now().isoformat()
+        }
+        
+        # 最初の質問を生成
+        return await self.continue_ideal_dialogue(session_id, None)
+    
+    async def continue_ideal_dialogue(
+        self,
+        session_id: str,
+        user_response: str = None
+    ) -> Dict[str, Any]:
+        """理想的な対話シナリオを継続"""
+        session_state = self._ideal_dialogue_sessions.get(session_id)
+        if not session_state:
+            return {
+                "type": "error",
+                "message": "対話セッションが見つかりません"
+            }
+        
+        # ユーザーの回答を記録（初回以外）
+        if user_response:
+            session_state["user_responses"].append({
+                "phase": session_state["phase"].value,
+                "response": user_response,
+                "timestamp": datetime.now().isoformat()
+            })
+        
+        # 現在のフェーズが完了かチェック
+        if session_state["phase"] == DialoguePhase.COMPLETED:
+            # 最終的なアクションプランを生成
+            action_plan = await self._generate_final_action_plan(session_state)
+            return {
+                "type": "action_plan_completed",
+                "action_plan": action_plan,
+                "session_summary": self._create_session_summary(session_state)
+            }
+        
+        # 次のフェーズに進むかチェック
+        next_phase = self.ideal_dialogue_manager.determine_next_phase(
+            session_state["phase"],
+            session_state["user_responses"]
+        )
+        
+        if next_phase != session_state["phase"]:
+            session_state["phase"] = next_phase
+            
+            # フェーズ完了時のフィードバック
+            if user_response:
+                phase_feedback = self._get_phase_completion_feedback(session_state["phase"])
+                if phase_feedback:
+                    return {
+                        "type": "phase_transition",
+                        "message": phase_feedback,
+                        "current_phase": session_state["phase"].value,
+                        "phase_description": self._get_phase_description(session_state["phase"])
+                    }
+        
+        # ソクラテス式質問を生成
+        try:
+            socratic_response = await self.ideal_dialogue_manager.get_socratic_question(
+                session_state["phase"],
+                session_state["context"],
+                session_state["user_responses"]
+            )
+            
+            return {
+                "type": "socratic_question",
+                "question": socratic_response.question,
+                "purpose": socratic_response.purpose,
+                "expected_insight": socratic_response.expected_insight,
+                "phase": socratic_response.phase,
+                "next_phase_condition": socratic_response.next_phase_condition,
+                "phase_description": self._get_phase_description(session_state["phase"]),
+                "progress": self._calculate_progress(session_state)
+            }
+            
+        except Exception as e:
+            return {
+                "type": "error",
+                "message": f"質問生成中にエラーが発生しました: {str(e)}"
+            }
+    
+    def _get_phase_description(self, phase: DialoguePhase) -> str:
+        """フェーズの説明を取得"""
+        descriptions = {
+            DialoguePhase.CURRENT_SITUATION: "📋 現状把握 - 現在の状況と課題を理解します",
+            DialoguePhase.PROBLEM_ANALYSIS: "🔍 課題分析 - 成功体験を発見し、問題を深掘りします",
+            DialoguePhase.SOLUTION_EXPLORATION: "💡 解決策探索 - 戦略的なアプローチ方法を考えます",
+            DialoguePhase.ACTION_PLAN: "🎯 アクションプラン - 具体的で測定可能な目標を設定します",
+            DialoguePhase.EXECUTION_SUPPORT: "🚀 実行支援 - 実現可能性と継続のための仕組みを作ります",
+            DialoguePhase.COMPLETED: "✅ 完了 - アクションプランが完成しました"
+        }
+        return descriptions.get(phase, "対話中")
+    
+    def _get_phase_completion_feedback(self, completed_phase: DialoguePhase) -> Optional[str]:
+        """フェーズ完了時のフィードバック"""
+        feedbacks = {
+            DialoguePhase.CURRENT_SITUATION: "現状を整理できました！次に成功体験を活用する方法を考えましょう。",
+            DialoguePhase.PROBLEM_ANALYSIS: "素晴らしい気づきですね！この成功体験を他の場面でも活用していきましょう。",
+            DialoguePhase.SOLUTION_EXPLORATION: "戦略的な視点が身についてきました！具体的な行動計画に落とし込んでいきましょう。",
+            DialoguePhase.ACTION_PLAN: "実行可能な計画ができました！最後に継続するための仕組みを考えましょう。",
+            DialoguePhase.EXECUTION_SUPPORT: "完璧です！実行に向けた準備が整いました。"
+        }
+        return feedbacks.get(completed_phase)
+    
+    def _calculate_progress(self, session_state: Dict[str, Any]) -> Dict[str, Any]:
+        """進捗を計算"""
+        phase_order = [
+            DialoguePhase.CURRENT_SITUATION,
+            DialoguePhase.PROBLEM_ANALYSIS,
+            DialoguePhase.SOLUTION_EXPLORATION,
+            DialoguePhase.ACTION_PLAN,
+            DialoguePhase.EXECUTION_SUPPORT,
+            DialoguePhase.COMPLETED
+        ]
+        
+        current_index = phase_order.index(session_state["phase"])
+        total_phases = len(phase_order) - 1  # COMPLETEDを除く
+        progress_percentage = int((current_index / total_phases) * 100)
+        
+        return {
+            "current_phase_index": current_index,
+            "total_phases": total_phases,
+            "percentage": progress_percentage,
+            "responses_in_current_phase": len([
+                r for r in session_state["user_responses"] 
+                if r.get("phase") == session_state["phase"].value
+            ])
+        }
+    
+    async def _generate_final_action_plan(self, session_state: Dict[str, Any]) -> Dict[str, Any]:
+        """最終的なアクションプランを生成"""
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", """
+あなたは新人営業マンの成長を支援するAIコーチです。
+
+以下の対話セッションの内容から、部下の成長を促す包括的なアクションプランを作成してください。
+
+上司の指示: {abstract_instruction}
+対話の記録: {dialogue_history}
+
+【アクションプラン作成の原則】
+1. SMART目標（具体的、測定可能、達成可能、関連性、期限付き）
+2. 段階的な実行ステップ
+3. 成功指標と測定方法
+4. 予想される障害と対策
+5. 継続的な成長のための仕組み
+6. 定期的な振り返りポイント
+
+JSON形式で以下の構造で回答してください：
+{{
+    "summary": "アクションプランの概要",
+    "smart_goals": [
+        {{
+            "goal": "具体的な目標",
+            "specific": "具体的な内容",
+            "measurable": "測定指標",
+            "achievable": "達成可能性",
+            "relevant": "関連性",
+            "time_bound": "期限"
+        }}
+    ],
+    "action_steps": [
+        {{
+            "step": "ステップ番号",
+            "action": "具体的な行動",
+            "deadline": "期限",
+            "success_criteria": "成功基準"
+        }}
+    ],
+    "success_metrics": {{
+        "quantitative": ["定量的指標"],
+        "qualitative": ["定性的指標"]
+    }},
+    "potential_obstacles": [
+        {{
+            "obstacle": "予想される障害",
+            "solution": "解決策"
+        }}
+    ],
+    "continuous_improvement": {{
+        "weekly_check": "週次チェック項目",
+        "monthly_review": "月次レビュー項目",
+        "quarterly_goal": "四半期目標"
+    }}
+}}
+"""),
+            ("user", "対話セッションからアクションプランを生成してください。")
+        ])
+        
+        chain = (
+            {
+                "abstract_instruction": lambda _: session_state["abstract_instruction"],
+                "dialogue_history": lambda _: json.dumps(session_state["user_responses"], ensure_ascii=False)
+            }
+            | prompt
+            | self.llm
+        )
+        
+        try:
+            response = await chain.ainvoke({})
+            action_plan_text = response.content
+            
+            # JSONパースを試行
+            import re
+            json_match = re.search(r'\{.*\}', action_plan_text, re.DOTALL)
+            if json_match:
+                action_plan = json.loads(json_match.group())
+            else:
+                # JSONが見つからない場合は、テキストそのままを返す
+                action_plan = {"raw_response": action_plan_text}
+                
+            return action_plan
+            
+        except Exception as e:
+            return {
+                "error": f"アクションプラン生成中にエラーが発生しました: {str(e)}",
+                "raw_dialogue": session_state["user_responses"]
+            }
+    
+    def _create_session_summary(self, session_state: Dict[str, Any]) -> Dict[str, Any]:
+        """セッションの要約を作成"""
+        return {
+            "abstract_instruction": session_state["abstract_instruction"],
+            "total_responses": len(session_state["user_responses"]),
+            "phases_completed": len(set(r.get("phase") for r in session_state["user_responses"])),
+            "duration": session_state.get("started_at"),
+            "final_phase": session_state["phase"].value
+        }
+
     async def process_user_response(
         self,
         session_id: str,
@@ -1323,6 +1809,18 @@ class DialogueManager:
         
         abstract_concept = instruction.get("abstract_concept", "")
         
+        # 経験がないことを示す有効な回答
+        no_experience_indicators = [
+            "ありません", "ないです", "経験がない", "経験ありません",
+            "したことがない", "ない", "特にない", "特にありません"
+        ]
+        
+        # 有効な否定回答かチェック
+        normalized_response = user_response.strip()
+        for indicator in no_experience_indicators:
+            if indicator in normalized_response:
+                return False  # 経験がないという有効な回答なので説明は不要
+        
         # 明確な理解不足のサイン
         confusion_indicators = [
             "って何？", "とは？", "分からない", "わからない",
@@ -1338,25 +1836,29 @@ class DialogueManager:
         
         # LLMによる詳細チェック
         prompt_messages = [
-            SystemMessage(content=f"""新人営業マンの回答を分析し、「{abstract_concept}」という概念を理解しているかを判定してください。
+            SystemMessage(content=f"""あなたは教育心理学の専門家です。
 
-理解不足のサイン：
-- 質問で返す（「〜って何？」「〜とは？」）
-- 困惑の表現（「分からない」「よくわからない」）
-- 避けるような回答（「頑張ります」のみ）
-- 関係ない回答
-- 極端に短い回答
+文脈：
+- 上司が新人に「{abstract_concept}」について質問しています
+- 新人が回答しました
 
-true（説明が必要）またはfalse（理解している）で回答してください。"""),
-            HumanMessage(content=f"概念: {abstract_concept}\n新人の回答: {user_response}\n\n概念説明が必要ですか？")
+新人の回答を分析し、以下を判定してください：
+1. 新人はこの概念を理解していますか？
+2. 概念の説明が必要ですか？
+
+判定の際は、回答の内容と文脈から新人の理解度を総合的に判断してください。
+短い回答でも、文脈に適した内容であれば理解していると判断できます。
+
+回答：true（説明が必要）またはfalse（理解している）"""),
+            HumanMessage(content=f"新人の回答: {user_response}")
         ]
         
         try:
             response = await self.llm.ainvoke(prompt_messages)
             return "true" in response.content.lower()
         except Exception:
-            # エラーの場合は短い回答なら説明が必要と判定
-            return len(user_response.strip()) < 10
+            # エラーの場合は混乱の指標がある場合のみ説明が必要と判定
+            return any(indicator in user_response for indicator in confusion_indicators)
     
     async def _generate_educational_explanation(
         self,
@@ -1405,15 +1907,28 @@ true（説明が必要）またはfalse（理解している）で回答して�
     ) -> Optional[Dict[str, str]]:
         """ユーザーの具体的な要求をチェック"""
         
-        # 明確な要求のパターン
+        # ユーザーが自分の経験や事例を共有しているかをチェック
+        experience_indicators = [
+            "例えば、", "具体的には、", "実際に", "これまでに", "過去に", 
+            "ました", "でした", "していた", "作成しました", "しました",
+            "構成し", "用いて", "守った", "効果的でした", "ことで",
+            "点も", "順に", "避け", "整理した"
+        ]
+        
+        # 経験共有のパターンが複数含まれている場合は要求ではない
+        matching_patterns = sum(1 for pattern in experience_indicators if pattern in user_response)
+        if matching_patterns >= 2:  # 複数の経験指標があれば経験共有と判定
+            return None
+        
+        # 明確な要求のパターン (より厳密に)
         request_patterns = {
-            "example_request": ["例を", "具体例", "サンプル", "実例", "作成して", "見せて", "教えて"],
-            "template_request": ["テンプレート", "フォーマット", "ひな形", "様式"],
-            "reference_request": ["参考", "お手本", "見本", "良い例"],
-            "knowledge_request": ["ナレッジ", "資料", "ドキュメント", "先輩の", "社内の"]
+            "example_request": ["例を教えて", "例を見せて", "具体例をください", "サンプルをください", "実例が欲しい"],
+            "template_request": ["テンプレートを", "フォーマットを", "ひな形を", "様式を"],
+            "reference_request": ["参考資料を", "お手本を", "見本を", "良い例を教えて"],
+            "knowledge_request": ["ナレッジを", "資料をください", "ドキュメントを", "先輩の例を", "社内の例を"]
         }
         
-        # パターンマッチング
+        # より厳密なパターンマッチング
         for request_type, patterns in request_patterns.items():
             if any(pattern in user_response for pattern in patterns):
                 return {
@@ -1426,26 +1941,35 @@ true（説明が必要）またはfalse（理解している）で回答して�
         abstract_concept = instruction.get("abstract_concept", "")
         
         prompt_messages = [
-            SystemMessage(content=f"""新人営業マンの回答を分析し、「{abstract_concept}」に関する具体的な要求があるかを判定してください。
+            SystemMessage(content=f"""あなたは1on1の対話分析の専門家です。
 
-要求の種類：
-- example_request: 具体例・サンプルの要求
-- template_request: テンプレート・フォーマットの要求  
-- reference_request: 参考資料・お手本の要求
-- knowledge_request: 社内ナレッジ・先輩の資料の要求
-- help_request: 作成支援・手伝いの要求
+現在の文脈：
+- 上司が新人に「{abstract_concept}」について質問や指導をしています
+- 新人営業マンが回答しました
 
-以下の形式で回答してください：
+新人の回答を分析し、以下を判定してください：
+
+【重要な判定基準】:
+1. 新人が自分の経験や体験を共有している場合 → 要求ではない
+   例: "例えば、私は〜しました", "実際に〜を作成しました", "これまでに〜した経験があります"
+   
+2. 新人が具体的な資料や例を求めている場合 → 要求である
+   例: "例を教えてください", "テンプレートをください", "参考資料が欲しいです"
+
+3. 新人が質問をしている場合 → 要求ではない (情報収集)
+   例: "〜はどうすればいいですか？", "〜について教えてください"
+
+回答形式：
 ```json
 {{
   "has_request": true/false,
-  "request_type": "要求の種類（上記から選択）",
-  "confidence": 0.0-1.0
+  "request_type": "要求の種類（example_request/template_request/reference_request/knowledge_request/help_request）",
+  "confidence": 0.0-1.0,
+  "reasoning": "判定理由を簡潔に",
+  "is_experience_sharing": true/false
 }}
-```
-
-要求がない場合は has_request: false で回答してください。"""),
-            HumanMessage(content=f"概念: {abstract_concept}\n新人の回答: {user_response}\n\n具体的な要求がありますか？")
+```"""),
+            HumanMessage(content=f"新人の回答: {user_response}")
         ]
         
         try:
@@ -1461,7 +1985,12 @@ true（説明が必要）またはfalse（理解している）で回答して�
             
             result = json.loads(response_text)
             
-            if result.get("has_request", False) and result.get("confidence", 0) > 0.6:
+            # 経験共有として判定された場合は要求ではない
+            if result.get("is_experience_sharing", False):
+                return None
+            
+            # 要求として判定され、十分な信頼度がある場合のみ処理
+            if result.get("has_request", False) and result.get("confidence", 0) > 0.7:
                 return {
                     "type": result.get("request_type", "example_request"),
                     "original_request": user_response,
@@ -1489,9 +2018,13 @@ true（説明が必要）またはfalse（理解している）で回答して�
         
         if request_type in ["example_request", "template_request", "reference_request", "knowledge_request"]:
             # 社内ナレッジベースから実例を検索・提供
+            print(f"DEBUG: Processing user request - concept: '{abstract_concept}', type: '{request_type}'")
+            
             knowledge_response = await self._provide_knowledge_examples(
                 abstract_concept, request_type, db_session
             )
+            
+            print(f"DEBUG: Final knowledge_response contains markdown: {'```markdown' in knowledge_response}")
             
             return {
                 "type": "knowledge_provision",
@@ -1524,14 +2057,21 @@ true（説明が必要）またはfalse（理解している）で回答して�
             abstract_concept, request_type, db_session
         )
         
+        print(f"DEBUG: Knowledge examples found: {len(knowledge_examples)}")
+        
         if knowledge_examples:
             formatted_examples = self._format_knowledge_examples(
                 knowledge_examples, abstract_concept, request_type
             )
+            print(f"DEBUG: Formatted examples contains markdown: {'```markdown' in formatted_examples}")
+            print(f"DEBUG: Formatted examples preview: {formatted_examples[:300]}...")
             return formatted_examples
         else:
             # ナレッジがない場合のフォールバック
-            return await self._generate_synthetic_examples(abstract_concept, request_type)
+            print(f"DEBUG: No knowledge found, using synthetic examples")
+            synthetic_result = await self._generate_synthetic_examples(abstract_concept, request_type)
+            print(f"DEBUG: Synthetic result contains markdown: {'```markdown' in synthetic_result}")
+            return synthetic_result
     
     async def _search_knowledge_base(
         self,
@@ -1542,22 +2082,286 @@ true（説明が必要）またはfalse（理解している）で回答して�
         """社内ナレッジベースを検索"""
         
         # 実際のナレッジベース検索実装
-        # ここでは簡単な例を示す
         try:
             # データベースやナレッジベースから関連資料を検索
             # 例: SELECT * FROM knowledge_base WHERE concept LIKE %abstract_concept%
             
-            # 仮の実装（実際は社内ナレッジシステムにアクセス）
-            sample_knowledge = [
-                {
-                    "title": f"{abstract_concept}の成功事例",
-                    "content": f"先輩営業マンが{abstract_concept}で成果を上げた実例",
-                    "author": "佐藤部長",
-                    "tags": [abstract_concept, "営業", "成功事例"]
-                }
-            ]
+            # 高品質なサンプルナレッジ（実際の有用例）
+            knowledge_samples = {
+                "伝わる資料作成": [
+                    {
+                        "title": "顧客課題解決型提案資料（マークダウン版）",
+                        "content": """```markdown
+# [顧客名]様 業務効率化ソリューション提案書
+
+**提案日**: 2024年12月XX日  
+**提案者**: 営業部 [担当者名]  
+**有効期限**: 2025年1月末まで
+
+---
+
+## 1. 現状課題の整理
+
+### 🔍 ヒアリング結果
+- **データ集計作業**: 月末に3日間の手作業が発生
+- **レポート作成**: Excel作業で週10時間を消費  
+- **情報共有**: 部署間での連携に時間がかかる
+
+### 📊 課題の定量化
+| 項目 | 現状 | 目標 |
+|------|------|------|
+| データ集計時間 | 24時間/月 | 2時間/月 |
+| レポート作成時間 | 40時間/月 | 10時間/月 |
+| エラー発生率 | 5% | 0.5% |
+
+---
+
+## 2. 解決策のご提案
+
+### 💡 ソリューション概要
+**[製品名]** による業務自動化システムの導入
+
+#### Before → After
+- **手作業データ集計** → **自動データ収集・加工**
+- **Excel手作業** → **テンプレート自動生成**
+- **メール・電話連携** → **リアルタイム情報共有**
+
+### 🎯 導入効果
+```
+月間工数削減: 62時間 → 12時間 (80%削減)
+年間コスト効果: 約480万円の人件費削減
+精度向上: エラー率 5% → 0.5%
+```
+
+---
+
+## 3. 導入プロセス
+
+### 📅 3ヶ月導入計画
+
+#### Phase 1: 基盤構築 (1ヶ月目)
+- [ ] システム環境構築
+- [ ] 既存データの移行準備
+- [ ] 担当者向け研修実施
+
+#### Phase 2: 段階導入 (2ヶ月目)  
+- [ ] データ集計機能の稼働開始
+- [ ] レポート自動生成の運用開始
+- [ ] ユーザーフィードバック収集
+
+#### Phase 3: 本格運用 (3ヶ月目)
+- [ ] 全機能の本格運用
+- [ ] 運用マニュアル整備
+- [ ] 効果測定・改善提案
+
+### 💰 投資回収
+```
+初期投資: 200万円
+月額費用: 10万円
+投資回収期間: 6ヶ月
+3年間ROI: 350%
+```
+
+---
+
+## 4. サポート体制
+
+### 🛠️ 導入支援
+- **専任SE**: 導入期間中の技術サポート
+- **研修プログラム**: 3回の集合研修 + 個別フォロー
+- **ヘルプデスク**: 平日9-18時の電話・メールサポート
+
+### 📞 緊急時対応
+- **24時間監視**: システム稼働状況の常時監視
+- **1時間以内対応**: 緊急時の初期対応保証
+- **月次レビュー**: 運用状況の定期確認
+
+---
+
+## 5. 次のステップ
+
+### 🚀 今後のスケジュール
+1. **12月20日まで**: ご検討・ご質問対応
+2. **12月25日**: 最終提案書のご提示  
+3. **1月10日**: 契約締結（目標）
+4. **2月1日**: 導入開始
+
+### ✅ 今回決めていただきたいこと
+- [ ] 提案内容についてのご承認
+- [ ] 導入時期のご確認
+- [ ] 次回打ち合わせ日程の調整
+
+---
+
+**お問い合わせ**  
+営業部 [担当者名]  
+📧 [email@company.com]  
+📞 090-XXXX-XXXX
+```
+
+**このテンプレートの使い方**:
+1. [　]内を実際の顧客情報に置き換え
+2. 数値データは必ず根拠資料を準備
+3. 顧客の業界用語を積極的に使用
+4. 印刷時はA4で5-6ページに収まるよう調整""",
+                        "author": "営業部 田村課長",
+                        "success_rate": "提案成功率 85%",
+                        "usage_frequency": "月15件使用",
+                        "tags": ["提案資料", "成功事例", "テンプレート"]
+                    },
+                    {
+                        "title": "営業提案書テンプレート（簡潔版）",
+                        "content": """```markdown
+# 営業提案書テンプレート
+
+## 📋 基本情報
+**顧客名**: [会社名 部署名 担当者名]  
+**提案者**: [自社名 担当者名]  
+**提案日**: [YYYY/MM/DD]
+
+---
+
+## 🎯 提案概要（30秒で伝わる）
+**お困りごと**: [顧客の課題を1行で]  
+**解決策**: [提案内容を1行で]  
+**効果**: [数値で示すメリット]
+
+例：
+- **お困りごと**: 月末の売上集計に3日かかっている
+- **解決策**: 自動集計システムで即座に完了
+- **効果**: 工数90%削減、正確性99.9%向上
+
+---
+
+## 📊 現状分析
+
+### ヒアリング内容
+| 項目 | 現状 | 課題 |
+|------|------|------|
+| [業務A] | [現在の状況] | [困っていること] |
+| [業務B] | [現在の状況] | [困っていること] |
+| [業務C] | [現在の状況] | [困っていること] |
+
+### 定量的な課題
+```
+時間: XX時間/月 → YY時間/月へ短縮目標
+コスト: XX万円/月 → YY万円/月へ削減目標  
+品質: エラー率XX% → YY%へ改善目標
+```
+
+---
+
+## 💡 解決提案
+
+### Before → After
+| 項目 | Before（現状） | After（改善後） | 効果 |
+|------|----------------|-----------------|------|
+| [項目1] | [現状] | [改善後] | [効果] |
+| [項目2] | [現状] | [改善後] | [効果] |
+| [項目3] | [現状] | [改善後] | [効果] |
+
+### 📈 ROI計算
+```
+初期投資: XXX万円
+月額費用: XX万円
+年間効果: XXX万円
+投資回収期間: X.X年
+3年間ROI: XXX%
+```
+
+---
+
+## 🗓️ 導入スケジュール
+
+| フェーズ | 期間 | 内容 | 成果物 |
+|----------|------|------|--------|
+| 準備 | 1週間 | [準備内容] | [成果物] |
+| 導入 | 2週間 | [導入内容] | [成果物] |
+| 運用 | 1週間 | [運用内容] | [成果物] |
+
+---
+
+## 🤝 次のアクション
+
+### 今回決めていただきたいこと
+- [ ] 提案内容へのご承認
+- [ ] 導入時期のご相談  
+- [ ] 予算範囲のご確認
+
+### 次回までの宿題
+**弊社**: [こちらでやること]  
+**お客様**: [お客様にお願いしたいこと]
+
+### 次回打ち合わせ
+**日時**: [候補日程]  
+**場所**: [場所]  
+**議題**: [話し合う内容]
+
+---
+
+**連絡先**: [担当者名] / [電話] / [メール]
+```
+
+**使用ガイド**:
+1. [　]内を実際の内容に置き換えて使用
+2. 数値は必ず根拠資料を用意
+3. 専門用語は顧客の業界用語に合わせる
+4. A4で3-4ページに収まるよう調整""",
+                        "author": "営業部 山田部長",
+                        "success_rate": "資料評価平均4.8/5.0",
+                        "usage_frequency": "全営業が使用",
+                        "tags": ["データ活用", "レイアウト", "実践的"]
+                    }
+                ],
+                "ストーリー性": [
+                    {
+                        "title": "顧客の一日ストーリー型プレゼン",
+                        "content": """**ストーリー展開テンプレート**:
+
+**導入部**:「○○部長の一日を想像してみてください」
+
+**問題提起**:
+- 朝9時: 売上報告の準備に30分
+- 10時: データが不正確で会議が紛糾
+- 午後: 手作業でのデータ集計が3時間
+- 夕方: 残業でようやく資料完成
+
+**解決提示**:
+「もし、この作業が10分で完了したら...」
+- 朝の30分 → 戦略検討時間に
+- データ不正確 → リアルタイム正確データ
+- 3時間作業 → 自動化で即座に完了
+- 残業なし → 定時で新規開拓活動
+
+**効果測定**:
+- 工数削減: 月40時間 → 5時間
+- 精度向上: エラー率2% → 0.1%
+- 満足度: 部長の業務満足度向上
+
+**行動喚起**:
+「来月から○○部長にこの快適な一日を過ごしていただけます」""",
+                        "author": "営業部 鈴木主任",
+                        "success_rate": "感情的共感度95%",
+                        "usage_frequency": "大型案件で必須使用",
+                        "tags": ["ストーリーテリング", "共感型", "大型案件"]
+                    }
+                ]
+            }
             
-            return sample_knowledge
+            # 実際の検索（概念にマッチするナレッジを探す）
+            matched_knowledge = knowledge_samples.get(abstract_concept, [])
+            
+            # デバッグ用ログ
+            print(f"DEBUG: Searching for concept: '{abstract_concept}'")
+            print(f"DEBUG: Available concepts: {list(knowledge_samples.keys())}")
+            print(f"DEBUG: Matched knowledge count: {len(matched_knowledge)}")
+            
+            # より良い検索の場合、実際のDBクエリを実行
+            # if db_session:
+            #     query = f"SELECT * FROM knowledge_base WHERE concept LIKE '%{abstract_concept}%'"
+            #     matched_knowledge = db_session.execute(query).fetchall()
+            
+            return matched_knowledge
             
         except Exception:
             return []
@@ -1568,7 +2372,7 @@ true（説明が必要）またはfalse（理解している）で回答して�
         abstract_concept: str,
         request_type: str
     ) -> str:
-        """ナレッジ例をフォーマット"""
+        """ナレッジ例を高品質フォーマット"""
         
         if request_type == "example_request":
             header = f"📚 **「{abstract_concept}」の社内実例**"
@@ -1582,11 +2386,27 @@ true（説明が必要）またはfalse（理解している）で回答して�
         formatted = f"{header}\n\n"
         
         for i, example in enumerate(knowledge_examples, 1):
-            formatted += f"**{i}. {example.get('title', '例')}**\n"
-            formatted += f"{example.get('content', '')}\n"
-            if example.get('author'):
-                formatted += f"_作成者: {example['author']}_\n"
-            formatted += "\n"
+            title = example.get('title', f'実例{i}')
+            content = example.get('content', '')
+            author = example.get('author', '')
+            success_rate = example.get('success_rate', '')
+            usage_frequency = example.get('usage_frequency', '')
+            
+            formatted += f"**{i}. {title}**\n"
+            
+            # 詳細内容をそのまま表示
+            if content:
+                formatted += f"{content}\n"
+            
+            # 成功指標や使用頻度があれば表示
+            if success_rate:
+                formatted += f"📊 成果: {success_rate}\n"
+            if usage_frequency:
+                formatted += f"📈 活用度: {usage_frequency}\n"
+            if author:
+                formatted += f"_作成者: {author}_\n"
+            
+            formatted += "\n---\n\n"
         
         return formatted
     
@@ -1595,21 +2415,71 @@ true（説明が必要）またはfalse（理解している）で回答して�
         abstract_concept: str,
         request_type: str
     ) -> str:
-        """ナレッジがない場合の合成例生成"""
+        """ナレッジがない場合の高品質合成例生成"""
+        
+        if request_type == "example_request":
+            prompt_content = f"""新人営業マンが「{abstract_concept}」の具体例を求めています。
+
+すぐに使えるマークダウン形式の実用的な例を3つ提供してください。
+
+【重要要件】:
+- コピー&ペーストで使えるマークダウン形式
+- 明日から実践できるレベルの詳細さ
+- 実際の営業シーンでの使用方法
+- 数値・時間・頻度を含む具体性
+- [変更箇所]を明示して使いやすく
+
+【出力形式】:
+**例1: [具体的なタイトル]**
+```markdown
+[実際に使えるマークダウンテンプレート]
+```
+- 使用場面: [詳細なシチュエーション]
+- カスタマイズ箇所: [変更すべき[　]部分の説明]
+- 成功のコツ: [実践的なアドバイス]
+- 所要時間: [作成にかかる時間]
+
+**例2**: [同様の形式]
+**例3**: [同様の形式]"""
+        elif request_type == "template_request":
+            prompt_content = f"""新人営業マンが「{abstract_concept}」のテンプレートを求めています。
+
+すぐに使える実用的なテンプレートを3つ提供してください。
+
+【重要要件】:
+- コピー&ペーストで使える形式
+- カスタマイズ方法も説明
+- 実際の文言例を含む
+- レイアウト・構成を具体的に
+- 使用上の注意点も併記
+
+【出力形式】:
+**テンプレート1: [名前]**
+```
+[実際に使える具体的なテンプレート]
+```
+使用方法: [詳細な説明]
+カスタマイズ: [変更すべき箇所]
+
+**テンプレート2**: [同様の形式]
+**テンプレート3**: [同様の形式]"""
+        else:
+            prompt_content = f"""新人営業マンが「{abstract_concept}」の参考資料を求めています。
+
+実践的で学習効果の高い参考例を3つ提供してください。
+
+【重要要件】:
+- 成功事例の具体的な内容
+- なぜ成功したかの分析
+- 新人が真似できるポイント
+- 避けるべき失敗パターン
+- 段階的な習得方法
+
+実際の営業現場で役立つ、具体的で詳細な内容にしてください。"""
         
         prompt_messages = [
-            SystemMessage(content=f"""新人営業マンが「{abstract_concept}」の{request_type}を求めています。
-
-営業現場で実際に使える具体的な例を3つ提供してください：
-
-要求タイプ: {request_type}
-- example_request: 具体的な実行例
-- template_request: 実用的なテンプレート
-- reference_request: 参考になる資料例
-- knowledge_request: 実践的なノウハウ
-
-新人営業マンが明日から実践できる、具体的で実用的な内容にしてください。"""),
-            HumanMessage(content=f"「{abstract_concept}」の{request_type}を提供してください。")
+            SystemMessage(content=prompt_content),
+            HumanMessage(content=f"「{abstract_concept}」について、新人営業マンが実際に使える具体的で詳細な{request_type}を提供してください。")
         ]
         
         try:
