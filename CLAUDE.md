@@ -8,6 +8,7 @@ This is a Sales Growth AI Agent system for supporting new sales representatives 
 
 **Backend FastAPI Service** (`backend/`) - Production-ready API service with comprehensive architecture
 **Slack Integration** - Real-time AI agent accessible via Slack messaging
+**Ideal Dialogue System** - Efficient Socratic questioning method that transforms abstract instructions into concrete action plans with minimal user burden (5 comprehensive questions vs 15+ individual questions)
 
 ## Development Commands
 
@@ -42,6 +43,10 @@ cd backend
 python demo_script.py  # Run demonstration script
 python slack_demo.py   # Test Slack integration
 python slack_setup_guide.py  # Slack setup guide
+
+# 理想的な対話シナリオのデモ
+python interactive_demo.py  # インタラクティブな対話デモ
+python demo_ideal_dialogue.py  # API経由の効率的対話デモ
 ```
 
 ## Architecture

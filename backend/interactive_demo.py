@@ -93,151 +93,96 @@ class InteractiveDemo:
             "こんにちは田中さん。お疲れ様です。\n\n"
             "上司から「顧客との関係を深めて売上を伸ばしてほしい」という指示があったと\n"
             "お聞きしました。私は営業スキル向上をサポートするAIアシスタントです。\n\n"
-            "この指示を具体的で実行可能なアクションプランに変えていきましょう。"
+            "効率的な対話を通じて、この指示を具体的で実行可能なアクションプランに変えていきましょう。\n"
+            "各段階で包括的な質問をしますので、詳しく教えてください。"
         )
         
         input("続行するにはEnterキーを押してください...")\n        self.print_separator()
     
     async def current_situation_phase(self):
-        """現状把握フェーズ"""
+        """現状把握フェーズ（効率化版）"""
         self.print_ai_message(
-            "まず現在の状況を教えてください。\n"
-            "今月の売上はいかがでしたか？目標は達成できていますか？"
+            "まず現在の状況を包括的に教えてください。\n\n"
+            "以下について詳しく聞かせてください：\n"
+            "1. 今月・先月の売上状況と目標達成度\n"
+            "2. 現在の時間配分（新規開拓 vs 既存顧客フォロー）\n"
+            "3. 既存顧客との関係の現状（良好な顧客、そうでない顧客）\n"
+            "4. 上司の「顧客との関係を深める」という指示に対するあなたの理解\n\n"
+            "これらをまとめて教えてください。"
         )
         
-        response1 = self.get_user_input("今月の売上状況")
-        self.user_responses.append({"phase": "current_situation", "question": "売上状況", "answer": response1})
-        
-        self.print_ai_message(
-            "ありがとうございます。状況を理解しました。\n\n"
-            "次に、現在の顧客対応について聞かせてください。\n"
-            "既存顧客と新規顧客、それぞれにどのくらい時間を割いていますか？"
-        )
-        
-        response2 = self.get_user_input("時間配分（既存:新規の比率など）")
-        self.user_responses.append({"phase": "current_situation", "question": "時間配分", "answer": response2})
-        
-        self.print_ai_message(
-            f"なるほど、{response2}という配分なのですね。\n\n"
-            "では、「顧客との関係を深める」という上司の指示について、\n"
-            "田中さんはどのように解釈していますか？"
-        )
-        
-        response3 = self.get_user_input("上司の指示への理解")
-        self.user_responses.append({"phase": "current_situation", "question": "指示の解釈", "answer": response3})
+        response = self.get_user_input("現状の包括的な説明")
+        self.user_responses.append({"phase": "current_situation", "question": "現状把握", "answer": response})
         
         self.print_separator()
     
     async def problem_analysis_phase(self):
-        """課題分析フェーズ"""
+        """課題分析フェーズ（効率化版）"""
         self.print_ai_message(
-            "抽象的で分かりにくい指示ですよね。少し具体的に考えてみましょう。\n\n"
-            "今の既存顧客との関係で、うまくいっている例はありますか？\n"
-            "特に良い関係を築けている顧客があれば教えてください。"
+            "抽象的な指示を具体的に理解するため、成功体験を分析しましょう。\n\n"
+            "以下について詳しく教えてください：\n"
+            "1. 最も良好な関係を築けている顧客は？\n"
+            "2. その顧客とうまくいっている理由は何だと思いますか？\n"
+            "3. その良好な関係から生まれた具体的な成果（売上、紹介など）\n"
+            "4. この成功パターンを他の顧客にも応用できるとお考えですか？\n\n"
+            "成功事例を包括的に分析して教えてください。"
         )
         
-        response1 = self.get_user_input("良好な関係の顧客例")
-        self.user_responses.append({"phase": "problem_analysis", "question": "成功事例", "answer": response1})
-        
-        self.print_ai_message(
-            f"素晴らしいですね！{response1}との関係がうまくいっているのですね。\n\n"
-            "その良い関係の結果、何か具体的な変化や成果はありましたか？\n"
-            "売上面でも、それ以外の面でも構いません。"
-        )
-        
-        response2 = self.get_user_input("良好な関係から生まれた成果")
-        self.user_responses.append({"phase": "problem_analysis", "question": "関係の成果", "answer": response2})
-        
-        self.print_ai_message(
-            f"それです！{response2}というような成果が生まれたのですね。\n\n"
-            "これが上司の言う「関係を深めて売上を伸ばす」の具体例です。\n\n"
-            "では、他の顧客でもこのような関係を築くには、\n"
-            "どんな行動が必要だと思いますか？"
-        )
-        
-        response3 = self.get_user_input("他の顧客での関係構築方法")
-        self.user_responses.append({"phase": "problem_analysis", "question": "関係構築方法", "answer": response3})
+        response = self.get_user_input("成功事例の包括的な分析")
+        self.user_responses.append({"phase": "problem_analysis", "question": "成功体験分析", "answer": response})
         
         self.print_separator()
     
     async def solution_exploration_phase(self):
-        """ソリューション探索フェーズ"""
+        """ソリューション探索フェーズ（効率化版）"""
         self.print_ai_message(
-            "良い考えですね！ただ、全ての顧客に同じだけ時間をかけるのは\n"
-            "現実的ではありませんよね。\n\n"
-            "効率的にアプローチするために、顧客をセグメント分けしてみませんか？\n\n"
-            "現在の顧客を「売上規模」と「関係の深さ」で分類すると、\n"
-            "どのようなグループができそうですか？"
+            "成功体験を他の顧客に効率的に応用する戦略を立てましょう。\n\n"
+            "以下について戦略的に考えて教えてください：\n"
+            "1. 顧客を「売上規模」と「関係の深さ」で分類するとどうなりますか？\n"
+            "2. その中で最も効果的にアプローチすべき優先順位は？\n"
+            "3. 優先度の高い顧客に対する具体的な関係構築方法は？\n"
+            "4. 時間やリソースの制約を考慮した現実的な計画は？\n\n"
+            "戦略的なアプローチ計画を包括的に教えてください。"
         )
         
-        response1 = self.get_user_input("顧客のセグメント分け")
-        self.user_responses.append({"phase": "solution_exploration", "question": "顧客セグメント", "answer": response1})
-        
-        self.print_ai_message(
-            f"完璧です！{response1}という分類ですね。\n\n"
-            "この中で、最も効果的にアプローチできそうなのは\n"
-            "「大口だけど関係が薄い」顧客グループだと思いませんか？\n\n"
-            "そのような顧客に対して、具体的にどのような行動を取れば、\n"
-            "成功事例と同じような関係を築けると思いますか？"
-        )
-        
-        response2 = self.get_user_input("具体的なアプローチ方法")
-        self.user_responses.append({"phase": "solution_exploration", "question": "アプローチ方法", "answer": response2})
+        response = self.get_user_input("戦略的アプローチ計画")
+        self.user_responses.append({"phase": "solution_exploration", "question": "戦略設計", "answer": response})
         
         self.print_separator()
     
     async def action_plan_phase(self):
-        """アクションプラン作成フェーズ"""
+        """アクションプラン作成フェーズ（効率化版）"""
         self.print_ai_message(
-            "良い方向性ですね！より具体的にしてみましょう。\n\n"
-            "いつまでに、どのような結果を目指しますか？\n"
-            "測定可能な目標にしてみてください。\n\n"
-            "例：「来月までに○○社に○回訪問し、担当者の○○を○個把握する」"
+            "戦略を具体的で測定可能なアクションプランに落とし込みましょう。\n\n"
+            "SMART目標として以下を設定してください：\n"
+            "1. 具体的なアクション内容（何を、誰に、どのように）\n"
+            "2. 実行期限（短期・中期の目標設定）\n"
+            "3. 成功の測定方法（定量的・定性的指標）\n"
+            "4. 期待される成果（売上向上、関係改善など）\n"
+            "5. 実行可能性の確認（リソース、時間の妥当性）\n\n"
+            "包括的なSMART目標を設定してください。"
         )
         
-        response1 = self.get_user_input("具体的な目標設定")
-        self.user_responses.append({"phase": "action_plan", "question": "具体的目標", "answer": response1})
-        
-        self.print_ai_message(
-            f"素晴らしい！「{response1}」は実行可能で測定可能な目標ですね。\n\n"
-            "さらに、売上への影響も設定しませんか？\n"
-            "3ヶ月後にはどのような売上結果を期待しますか？"
-        )
-        
-        response2 = self.get_user_input("売上目標")
-        self.user_responses.append({"phase": "action_plan", "question": "売上目標", "answer": response2})
-        
-        self.print_ai_message(
-            f"完璧です！{response2}という売上目標も設定できました。\n\n"
-            "では、この計画を実行するうえで、想定される障害や課題はありますか？\n"
-            "それらをどう克服しますか？"
-        )
-        
-        response3 = self.get_user_input("想定される課題と解決策")
-        self.user_responses.append({"phase": "action_plan", "question": "課題と解決策", "answer": response3})
+        response = self.get_user_input("SMART目標の包括的設定")
+        self.user_responses.append({"phase": "action_plan", "question": "SMART目標設定", "answer": response})
         
         self.print_separator()
     
     async def execution_support_phase(self):
-        """実行支援フェーズ"""
+        """実行支援フェーズ（効率化版）"""
         self.print_ai_message(
-            "課題を事前に特定できて素晴らしいです。\n\n"
-            "具体的な解決策を考えましょう。\n"
-            "1週間のスケジュールを見直して、どの活動の優先度を下げれば\n"
-            "顧客訪問の時間を確保できそうですか？"
+            "計画を確実に実行し、継続するための仕組みを作りましょう。\n\n"
+            "実行成功のために以下について考えて教えてください：\n"
+            "1. 予想される障害や課題（時間、スキル、モチベーションなど）\n"
+            "2. それぞれの課題に対する具体的な解決策\n"
+            "3. 継続するための仕組み（習慣化、動機維持の方法）\n"
+            "4. 進捗確認の方法（週次・月次のチェックポイント）\n"
+            "5. 計画修正のタイミングとトリガー\n\n"
+            "実行を成功させる包括的な支援策を教えてください。"
         )
         
-        response1 = self.get_user_input("時間確保の具体策")
-        self.user_responses.append({"phase": "execution_support", "question": "時間確保", "answer": response1})
-        
-        self.print_ai_message(
-            f"それなら実行できそうですね！{response1}という工夫が良いと思います。\n\n"
-            "最後に、このアクションプランの進捗をどのように確認しますか？\n"
-            "1週間後、2週間後のチェックポイントを設定しましょう。"
-        )
-        
-        response2 = self.get_user_input("進捗確認方法")
-        self.user_responses.append({"phase": "execution_support", "question": "進捗確認", "answer": response2})
+        response = self.get_user_input("実行支援の包括的計画")
+        self.user_responses.append({"phase": "execution_support", "question": "実行支援計画", "answer": response})
         
         self.print_separator()
     
@@ -256,15 +201,16 @@ class InteractiveDemo:
         print("└──────────────────────────────────────────┘\n")
         
         self.print_ai_message(
-            "このように、段階的な質問を通じて：\n"
-            "✅ 現状を正確に把握\n"
-            "✅ 成功パターンを発見\n"
-            "✅ 顧客をセグメント分け\n"
-            "✅ 具体的で測定可能な目標を設定\n"
-            "✅ 障害を予測し解決策を検討\n"
-            "✅ 進捗確認方法を決定\n\n"
-            "上司の抽象的な指示が、実行可能なアクションプランになりました！\n\n"
-            "このプロセスを通じて、田中さんの問題解決スキルも向上していきます。"
+            "効率的な対話を通じて、以下を短時間で達成できました：\n"
+            "✅ 現状を包括的に把握\n"
+            "✅ 成功パターンを発見・分析\n"
+            "✅ 戦略的なアプローチ方法を設計\n"
+            "✅ SMART目標と具体的なアクションプランを設定\n"
+            "✅ 実行支援の仕組みを構築\n\n"
+            "わずか5つの包括的な質問で、上司の抽象的な指示が\n"
+            "実行可能なアクションプランに変換されました！\n\n"
+            "このプロセスにより、効率的に問題解決スキルが向上し、\n"
+            "自立的な思考力が身につきます。"
         )
         
         self.print_separator()
