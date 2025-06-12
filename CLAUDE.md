@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This is a Sales Growth AI Agent system for supporting new sales representatives through 1-on-1 analysis and action plan generation. The project consists of:
 
 **Backend FastAPI Service** (`backend/`) - Production-ready API service with comprehensive architecture
+**Slack Integration** - Real-time AI agent accessible via Slack messaging
 
 ## Development Commands
 
@@ -38,6 +39,8 @@ alembic upgrade head     # Run migrations
 ```bash
 cd backend
 python demo_script.py  # Run demonstration script
+python slack_demo.py   # Test Slack integration
+python slack_setup_guide.py  # Slack setup guide
 ```
 
 ## Architecture
@@ -49,9 +52,11 @@ python demo_script.py  # Run demonstration script
   - `dialogue_manager.py`: AI-driven conversation flow control  
   - `real_llm_service.py`: Production LLM integration (OpenAI/Anthropic)
   - `mock_llm_service.py`: Mock service for testing without API calls
+  - `slack_service.py`: Slack Bot integration and event handling
 - **API Endpoints**: 
   - `app/api/test_endpoints.py`: Basic testing and health endpoints
   - `app/api/llm_demo_endpoints.py`: AI dialogue demonstration endpoints
+  - `app/api/slack_endpoints.py`: Slack Events API and webhook endpoints
 - **Configuration**: `app/core/config.py` handles environment variables and settings
 
 
@@ -77,6 +82,11 @@ USE_MOCK_LLM=false              # Set to true for testing without API calls
 OPENAI_API_KEY=your-key-here    # Required if using OpenAI
 ANTHROPIC_API_KEY=your-key-here # Required if using Anthropic
 
+# Slack Integration
+SLACK_BOT_TOKEN=xoxb-your-token # Bot User OAuth Token
+SLACK_SIGNING_SECRET=your-secret # App Signing Secret
+SLACK_APP_TOKEN=xapp-your-token # App-Level Token (Socket Mode)
+
 # API Configuration  
 CORS_ORIGINS=*                  # Configure for production
 LOG_LEVEL=INFO
@@ -97,3 +107,4 @@ DEBUG=true                      # Development only
 - Error handling includes graceful degradation for LLM API failures  
 - Both Japanese and English content supported in prompts and responses
 - Database operations use proper connection pooling and async patterns
+- Slack integration supports DMs, channel mentions, and session management per user

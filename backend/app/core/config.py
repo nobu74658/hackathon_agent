@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""  # 実際のキーが必要な場合のみ設定
     ANTHROPIC_MODEL: str = "claude-3-haiku-20240307"
     
+    # Slack
+    SLACK_BOT_TOKEN: str = ""  # Slack Bot User OAuth Token (xoxb-)
+    SLACK_SIGNING_SECRET: str = ""  # Slack App Signing Secret
+    SLACK_APP_TOKEN: str = ""  # Socket Mode用App-Level Token (xapp-)
+    
     # CORS - 文字列またはリストを受け付ける
     CORS_ORIGINS: Union[str, List[str]] = "http://localhost:3000,http://localhost:8080"
     

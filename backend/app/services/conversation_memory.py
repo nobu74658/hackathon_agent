@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.core.config import settings
-from app.models.dialogue import DialogueSession, DialogueMessage, DialogueContext
+# from app.models.dialogue import DialogueSession, DialogueMessage, DialogueContext
 
 
 class ConversationMemoryService:
