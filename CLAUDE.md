@@ -4,10 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Sales Growth AI Agent system for supporting new sales representatives through 1-on-1 analysis and action plan generation. The project has dual implementations:
+This is a Sales Growth AI Agent system for supporting new sales representatives through 1-on-1 analysis and action plan generation. The project consists of:
 
-1. **MVP Flask Application** (`mvp/`) - Simple prototype with HTML/JS frontend and SQLite database
-2. **Backend FastAPI Service** (`backend/`) - Production-ready API service with comprehensive architecture
+**Backend FastAPI Service** (`backend/`) - Production-ready API service with comprehensive architecture
 
 ## Development Commands
 
@@ -34,22 +33,6 @@ pytest --cov=app tests/  # Coverage
 alembic upgrade head     # Run migrations
 ```
 
-### MVP Application (Flask)
-```bash
-cd mvp
-
-# Setup
-python -m venv venv
-source venv/bin/activate  # macOS/Linux
-pip install -r requirements.txt
-
-# Environment
-echo "OPENAI_API_KEY=your-api-key-here" > .env
-echo "USE_MOCK_LLM=false" >> .env  # or true for mock
-
-# Run
-python app.py  # Starts on port 5000
-```
 
 ### Quick Demo
 ```bash
@@ -71,11 +54,6 @@ python demo_script.py  # Run demonstration script
   - `app/api/llm_demo_endpoints.py`: AI dialogue demonstration endpoints
 - **Configuration**: `app/core/config.py` handles environment variables and settings
 
-### MVP Structure
-- **Flask App**: Simple web interface for 1-on-1 text analysis
-- **AI Service**: OpenAI integration for text analysis and question generation
-- **Database**: SQLite with session management and chat history
-- **Frontend**: Vanilla HTML/JS with real-time interaction
 
 ### LLM Integration
 The system supports multiple LLM providers through an abstraction layer:
