@@ -6,7 +6,7 @@ from .conversation_history_service import ConversationHistoryService
 from .knowledge_base_service import KnowledgeBaseService
 from .action_template_generator import ActionTemplateGenerator
 from .real_llm_service import RealLLMService
-from .mock_llm import MockLLMService
+from .mock_llm import MockLLMProvider as MockLLMService
 from .slack_service import SlackService
 
 __all__ = [

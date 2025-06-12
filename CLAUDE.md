@@ -31,7 +31,8 @@ pytest                   # Run tests
 pytest --cov=app tests/  # Coverage
 
 # Database operations
-alembic upgrade head     # Run migrations
+alembic upgrade head                    # Run migrations
+python scripts/seed_knowledge_base.py  # Populate knowledge base with sample data
 ```
 
 

@@ -19,11 +19,17 @@ class ConversationMemoryService:
     
     def __init__(self):
         self.redis_client = None
-        self.llm = ChatOpenAI(
-            model=settings.OPENAI_MODEL,
-            temperature=0.3,
-            api_key=settings.OPENAI_API_KEY
-        )
+        
+        # モック環境かどうかによってLLMを初期化
+        if settings.USE_MOCK_LLM or not settings.OPENAI_API_KEY:
+            # モック環境では簡単なダミーLLMを使用
+            self.llm = None  # モック時はNoneに設定
+        else:
+            self.llm = ChatOpenAI(
+                model=settings.OPENAI_MODEL,
+                temperature=0.3,
+                api_key=settings.OPENAI_API_KEY
+            )
     
     async def initialize(self):
         """Redis接続の初期化"""
@@ -151,7 +157,7 @@ class ConversationMemoryService:
             # 要約がない場合は生成
             messages = memory.chat_memory.messages
             if messages:
-                summary = await memory.predict_new_summary(
+                summary = memory.predict_new_summary(
                     messages=messages,
                     existing_summary=""
                 )
@@ -209,11 +215,19 @@ class ConversationMemoryService:
         ["トピック1", "トピック2", "トピック3"]
         """
         
-        response = await self.llm.ainvoke(prompt)
+        # モック環境またはLLMが無い場合
+        if self.llm is None:
+            # 簡単なキーワードベースの抽出
+            keywords = ["営業", "顧客", "提案", "課題", "改善", "目標"]
+            found_keywords = [kw for kw in keywords if kw in conversation_text]
+            return found_keywords[:3]
+        
         try:
+            response = await self.llm.ainvoke(prompt)
             topics = json.loads(response.content)
             return topics[:5]  # 最大5個
-        except:
+        except Exception as e:
+            # エラーの場合は空のリストを返す
             return []
     
     async def clear_session(self, session_id: str):

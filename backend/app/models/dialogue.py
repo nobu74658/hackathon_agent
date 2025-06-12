@@ -65,7 +65,7 @@ class ConversationInsight(Base):
     is_active = Column(Boolean, default=True)
     
     # メタデータ（どの会話から抽出されたか等）
-    metadata = Column(JSON, default=dict)
+    insight_metadata = Column(JSON, default=dict)
     
     # Relationships
     session = relationship("DialogueSession", back_populates="insights")

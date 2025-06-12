@@ -1,5 +1,6 @@
 from typing import Dict, Any, List, Optional, Tuple
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain.schema import SystemMessage, HumanMessage, AIMessage
 from langchain.schema.runnable import RunnablePassthrough
 from langchain_openai import ChatOpenAI
 from langchain.output_parsers import PydanticOutputParser
@@ -115,41 +116,169 @@ class DialogueManager:
         # 情報の充足度を評価
         completeness_score = await self._evaluate_completeness(context)
         
-        if completeness_score >= 80:
+        # 対話の段階を判定
+        dialogue_stage = self._determine_dialogue_stage(context, completeness_score)
+        
+        if dialogue_stage == "action_plan" and completeness_score >= 95:
             # 十分な情報が集まった場合、アクションプラン生成
             action_plan = await self._generate_action_plan(context)
             return {
                 "type": "action_plan",
                 "data": action_plan,
-                "completeness_score": completeness_score
+                "completeness_score": completeness_score,
+                "stage": dialogue_stage
             }
         else:
-            # まだ情報が不足している場合、追加質問生成
-            follow_up_questions = await self._generate_follow_up_questions(context)
+            # まだ情報が不足している場合、段階的な質問生成
+            follow_up_questions = await self._generate_stage_based_questions(context, dialogue_stage)
             return {
                 "type": "follow_up",
                 "questions": follow_up_questions,
-                "completeness_score": completeness_score
+                "completeness_score": completeness_score,
+                "stage": dialogue_stage,
+                "stage_description": self._get_stage_description(dialogue_stage)
             }
+    
+    def _determine_dialogue_stage(self, context: Dict[str, Any], completeness_score: int) -> str:
+        """対話の段階を判定"""
+        messages = context.get("messages", [])
+        message_count = len([msg for msg in messages if msg.get("role") == "user"])
+        
+        # メッセージ数と完了度スコアによる段階判定
+        if message_count <= 1:
+            return "initial_understanding"  # 初期理解段階
+        elif message_count <= 3 and completeness_score < 40:
+            return "problem_clarification"  # 課題明確化段階  
+        elif message_count <= 5 and completeness_score < 70:
+            return "deep_analysis"  # 深い分析段階
+        elif completeness_score < 85:
+            return "solution_exploration"  # 解決策探索段階
+        elif completeness_score < 95:
+            return "action_preparation"  # アクション準備段階
+        else:
+            return "action_plan"  # アクションプラン生成段階
+    
+    def _get_stage_description(self, stage: str) -> str:
+        """段階の説明を取得"""
+        descriptions = {
+            "initial_understanding": "📋 初期状況の理解",
+            "problem_clarification": "🎯 課題の明確化", 
+            "deep_analysis": "🔍 詳細分析",
+            "solution_exploration": "💡 解決策の探索",
+            "action_preparation": "📝 アクション準備",
+            "action_plan": "🚀 アクションプラン生成"
+        }
+        return descriptions.get(stage, "🤔 分析中")
+    
+    async def _generate_stage_based_questions(self, context: Dict[str, Any], stage: str) -> List[str]:
+        """段階に基づいた質問生成"""
+        if stage == "initial_understanding":
+            return await self._generate_initial_questions(context)
+        elif stage == "problem_clarification":
+            return await self._generate_clarification_questions(context)
+        elif stage == "deep_analysis":
+            return await self._generate_analysis_questions(context)
+        elif stage == "solution_exploration":
+            return await self._generate_solution_questions(context)
+        elif stage == "action_preparation":
+            return await self._generate_preparation_questions(context)
+        else:
+            return await self._generate_follow_up_questions(context)
+    
+    async def _generate_initial_questions(self, context: Dict[str, Any]) -> List[str]:
+        """初期理解のための質問生成"""
+        messages = context.get("messages", [])
+        latest_message = messages[-1].get("content", "") if messages else ""
+        
+        # 1on1の内容から抽象的な指示を特定
+        if "距離を詰める" in latest_message or "信頼関係" in latest_message:
+            return [
+                "上司から「顧客との距離を詰める」という指摘がありましたが、具体的にどのような場面でそう感じられたのでしょうか？",
+                "これまでの営業活動で、顧客との関係構築において最も困難だった瞬間はどんな時でしたか？",
+                "現在、新規顧客とのやり取りで特に意識していることはありますか？"
+            ]
+        elif "相手の課題に寄り添った提案" in latest_message:
+            return [
+                "「相手の課題に寄り添った提案」について、これまでどのようなアプローチを取られていましたか？",
+                "顧客のヒアリング時に、どんな質問をすることが多いですか？",
+                "提案内容を決める際に、最も重視している点は何ですか？"
+            ]
+        elif "温度感を読む" in latest_message:
+            return [
+                "上司から「顧客の温度感を読む」という指摘がありましたが、これまでにそういった感覚を意識したことはありますか？",
+                "商談中に、顧客の興味や関心度をどのように判断していますか？",
+                "顧客が積極的な時と消極的な時の違いを、何で感じ取ることが多いですか？"
+            ]
+        else:
+            return [
+                "この1on1の内容について、どの部分が最も改善したいポイントだと感じますか？",
+                "上司からのアドバイスで、特に具体的な方法を知りたいと思った部分はありますか？",
+                "現在の営業活動で、最も不安に感じていることは何ですか？"
+            ]
+    
+    async def _generate_clarification_questions(self, context: Dict[str, Any]) -> List[str]:
+        """課題明確化のための質問生成"""
+        return [
+            "その課題が発生する典型的なシチュエーションを具体的に教えてください",
+            "同じような状況で、うまくいった経験はありますか？その時は何が違いましたか？",
+            "この課題によって、実際にどのような損失や機会損失が発生していますか？"
+        ]
+    
+    async def _generate_analysis_questions(self, context: Dict[str, Any]) -> List[str]:
+        """深い分析のための質問生成"""
+        return [
+            "その課題の根本的な原因は何だと思いますか？",
+            "これまでに試したことがある解決策があれば教えてください",
+            "理想的な状態になったとき、どのような変化が期待できますか？"
+        ]
+    
+    async def _generate_solution_questions(self, context: Dict[str, Any]) -> List[str]:
+        """解決策探索のための質問生成"""
+        return [
+            "解決策を実行する上で、どのようなサポートや資源が必要ですか？",
+            "この改善に取り組む際の期限や目標はありますか？",
+            "成功を測る具体的な指標があれば教えてください"
+        ]
+    
+    async def _generate_preparation_questions(self, context: Dict[str, Any]) -> List[str]:
+        """アクション準備のための質問生成"""
+        return [
+            "実行に移す前に不安な点や懸念はありますか？",
+            "取り組みを始める最適なタイミングはいつ頃でしょうか？",
+            "進捗を確認する方法や頻度はどうしますか？"
+        ]
     
     async def _evaluate_completeness(self, context: Dict[str, Any]) -> int:
         """情報の充足度を評価"""
         context_str = json.dumps(context, ensure_ascii=False, indent=2)
         messages = [
             {"role": "system", "content": """営業スキル向上のアクションプラン作成に必要な情報の充足度を評価してください。
-            
-            以下の観点で評価してください：
-            1. 現在の課題や悩みが明確か
-            2. 具体的な状況や事例があるか
-            3. 目標や期待される成果が明確か
-            4. 現在のスキルレベルが把握できるか
-            5. 利用可能なリソースや制約が明確か
-            
-            0-100のスコアで評価してください。数字のみ回答してください。"""},
+
+段階的評価基準：
+【20-30点】課題の概要は理解できるが、具体性に欠ける
+【40-50点】課題は明確だが、具体的な状況や背景情報が不足
+【60-70点】課題と状況は明確だが、詳細な分析が必要
+【80-85点】詳細は揃っているが、解決策の方向性が未確定
+【90-95点】全ての情報が揃い、アクションプラン作成準備完了
+【95点以上】アクションプラン生成に十分な情報
+
+以下の観点で厳格に評価してください：
+1. 課題の具体性（抽象的な指摘→具体的な場面）
+2. 根本原因の把握（症状→原因の特定）
+3. 目標と期限の明確化
+4. 実行可能性の検証
+5. 成功指標の定義
+
+0-100のスコアで評価してください。数字のみ回答してください。"""},
             {"role": "user", "content": f"会話履歴：\n{context_str}\n\n充足度スコア（0-100）:"}
         ]
         
-        response = await self.llm.ainvoke(messages)
+        from langchain.schema import HumanMessage, SystemMessage
+        langchain_messages = [
+            SystemMessage(content=messages[0]["content"]),
+            HumanMessage(content=messages[1]["content"])
+        ]
+        response = await self.llm.ainvoke(langchain_messages)
         try:
             score = int(response.content.strip())
             return min(max(score, 0), 100)  # 0-100の範囲に制限
@@ -182,7 +311,11 @@ class DialogueManager:
             {"role": "user", "content": f"会話履歴：\n{chat_history}\n\n追加で必要な情報を収集するための質問を生成してください。"}
         ]
         
-        response = await self.llm.ainvoke(prompt_messages)
+        langchain_messages = [
+            SystemMessage(content=prompt_messages[0]["content"]),
+            HumanMessage(content=prompt_messages[1]["content"])
+        ]
+        response = await self.llm.ainvoke(langchain_messages)
         
         # レスポンスから質問を抽出
         questions = []

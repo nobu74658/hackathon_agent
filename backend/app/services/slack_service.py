@@ -138,6 +138,13 @@ class SlackService:
             await say("メッセージが空です。何かご質問はありますか？")
             return
         
+        # メッセージが長すぎる場合の処理
+        if len(text) > 3000:
+            await say("メッセージが長すぎます。もう少し短くまとめていただけますか？（3000文字以下）")
+            return
+        
+        logger.info(f"Processing message from user {user_id}, length: {len(text)} chars")
+        
         # セッションIDとしてSlackユーザーIDを使用
         session_id = f"slack_{user_id}"
         
@@ -151,17 +158,42 @@ class SlackService:
                 formatted_response = self._format_action_plan_for_slack(action_plan, response["completeness_score"])
             else:  # follow_up
                 questions = response["questions"] 
-                formatted_response = self._format_questions_for_slack(questions, response["completeness_score"])
+                stage_info = {
+                    "stage": response.get("stage", "analysis"),
+                    "stage_description": response.get("stage_description", "分析中")
+                }
+                formatted_response = self._format_questions_for_slack(
+                    questions, 
+                    response["completeness_score"],
+                    stage_info
+                )
             
             await say(formatted_response)
             
         except Exception as e:
-            logger.error(f"Error processing message for user {user_id}: {e}")
-            await say("申し訳ございません。処理中にエラーが発生しました。もう一度お試しください。")
+            import traceback
+            error_details = traceback.format_exc()
+            logger.error(f"Error processing message for user {user_id}: {e}\nTraceback: {error_details}")
+            
+            # 開発環境ではより詳細なエラー情報を表示
+            if settings.DEBUG:
+                await say(f"🚨 エラーが発生しました:\n```{str(e)}```\n詳細はログを確認してください。")
+            else:
+                await say("申し訳ございません。処理中にエラーが発生しました。もう一度お試しください。")
     
-    def _format_questions_for_slack(self, questions: List[str], completeness_score: int) -> str:
+    def _format_questions_for_slack(
+        self, 
+        questions: List[str], 
+        completeness_score: int, 
+        stage_info: Dict[str, str] = None
+    ) -> str:
         """質問をSlack用にフォーマット"""
-        formatted = f"📊 情報収集進捗: {completeness_score}%\n\n"
+        # 段階情報を表示
+        if stage_info:
+            formatted = f"{stage_info['stage_description']} (進捗: {completeness_score}%)\n\n"
+        else:
+            formatted = f"📊 情報収集進捗: {completeness_score}%\n\n"
+        
         formatted += "以下の点について詳しく教えてください：\n"
         
         for i, question in enumerate(questions, 1):
