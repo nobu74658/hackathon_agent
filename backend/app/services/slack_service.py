@@ -153,9 +153,21 @@ class SlackService:
             response = await self.dialogue_manager.process_user_response(session_id, text, None)
             
             # レスポンスタイプに応じて適切にフォーマット
-            if response["type"] == "action_plan":
+            if response["type"] == "one_on_one_analysis":
+                # 新しい1on1分析結果をフォーマット
+                analysis_data = response["data"]
+                formatted_response = self._format_one_on_one_analysis_for_slack(analysis_data)
+            elif response["type"] == "one_on_one_clarification":
+                # 1on1指示の具体化質問をフォーマット
+                formatted_response = self._format_one_on_one_clarification_for_slack(response)
+            elif response["type"] == "one_on_one_final_plan":
+                # 対話型具体化プロセス完了後の最終アクションプラン
+                formatted_response = self._format_one_on_one_final_plan_for_slack(response)
+            elif response["type"] == "action_plan":
                 action_plan = response["data"]
                 formatted_response = self._format_action_plan_for_slack(action_plan, response["completeness_score"])
+            elif response["type"] == "error":
+                formatted_response = f"⚠️ {response['message']}\n\n簡単な質問から始めてみませんか？"
             else:  # follow_up
                 questions = response["questions"] 
                 stage_info = {
@@ -230,6 +242,176 @@ class SlackService:
         
         if len(formatted) > 3000:
             formatted = formatted[:2900] + "\n\n_（続きがあります）_"
+        
+        return formatted
+    
+    def _format_one_on_one_analysis_for_slack(self, analysis_data: Dict[str, Any]) -> str:
+        """1on1分析結果をSlack用にフォーマット"""
+        
+        final_summary = analysis_data.get("final_summary", {})
+        supervisor_instructions = analysis_data.get("supervisor_instructions", [])
+        concrete_plans = analysis_data.get("concrete_plans", [])
+        
+        # ヘッダー
+        formatted = "🎯 **1on1フィードバック分析結果**\n\n"
+        
+        # 特定された上司の指示
+        if supervisor_instructions:
+            formatted += "📋 **特定された上司からの指示:**\n"
+            for i, instruction in enumerate(supervisor_instructions[:2], 1):
+                formatted += f"{i}. {instruction.get('abstract_concept', '')}\n"
+            formatted += "\n"
+        
+        # 優先アクション
+        priority_actions = final_summary.get("priority_actions", [])
+        if priority_actions:
+            formatted += "🚀 **優先的に取り組むべきアクション:**\n"
+            for i, action in enumerate(priority_actions[:3], 1):
+                formatted += f"\n**{i}. {action.get('action', '')}**\n"
+                steps = action.get('specific_steps', [])
+                for step in steps[:2]:  # 最初の2ステップのみ表示
+                    formatted += f"   • {step}\n"
+                formatted += f"   📅 実行頻度: {action.get('frequency', '')}\n"
+        
+        # 実装タイムライン
+        timeline = final_summary.get("implementation_timeline", {})
+        if timeline:
+            formatted += "\n📅 **実装スケジュール:**\n"
+            if timeline.get("immediately"):
+                formatted += f"🔴 **今すぐ**: {timeline['immediately']}\n"
+            if timeline.get("this_week"):
+                formatted += f"🟡 **今週中**: {timeline['this_week']}\n"
+            if timeline.get("this_month"):
+                formatted += f"🟢 **今月中**: {timeline['this_month']}\n"
+        
+        # 成功指標
+        metrics = final_summary.get("success_metrics", [])
+        if metrics:
+            formatted += "\n📊 **成功指標:**\n"
+            for metric in metrics[:2]:
+                formatted += f"• **{metric.get('metric', '')}**: {metric.get('target', '')}\n"
+        
+        # 活用したナレッジ
+        if analysis_data.get("knowledge_used"):
+            formatted += "\n📚 社内ナレッジを活用して分析しました\n"
+        
+        # 次のステップ
+        next_steps = final_summary.get("next_steps", [])
+        if next_steps:
+            formatted += "\n🎯 **次のステップ:**\n"
+            for step in next_steps[:2]:
+                formatted += f"• {step}\n"
+        
+        # 文字数制限対応
+        if len(formatted) > 3000:
+            formatted = formatted[:2900] + "\n\n_（詳細が省略されています）_"
+        
+        return formatted
+    
+    def _format_one_on_one_clarification_for_slack(self, response: Dict[str, Any]) -> str:
+        """1on1指示の具体化質問をSlack用にフォーマット"""
+        
+        instruction = response.get("instruction_being_clarified", {})
+        questions = response.get("questions", [])
+        current_index = response.get("current_instruction_index", 0)
+        total_instructions = response.get("total_instructions", 1)
+        stage_description = response.get("stage_description", "")
+        
+        # ヘッダー
+        formatted = f"🎯 **{stage_description}**\n\n"
+        
+        # 現在分析中の指示
+        if instruction:
+            formatted += f"📋 **上司からの指示**: \"{instruction.get('abstract_concept', '不明')}\"\n"
+            if instruction.get('original_text'):
+                formatted += f"💬 **元の発言**: {instruction['original_text']}\n\n"
+            else:
+                formatted += "\n"
+        
+        # 具体化のための質問
+        formatted += "🔍 **具体的にするための質問**:\n"
+        for i, question in enumerate(questions, 1):
+            formatted += f"{i}. {question}\n"
+        
+        # 進捗とガイダンス
+        formatted += f"\n📊 **進捗**: {current_index + 1}/{total_instructions} の指示を具体化中\n"
+        formatted += "\n💡 **お答えください**: 上記の質問にできるだけ具体的にお答えください。具体的であればあるほど、実践的なアクションプランを作成できます。"
+        
+        # 文字数制限対応
+        if len(formatted) > 3000:
+            formatted = formatted[:2900] + "\n\n_（内容が省略されています）_"
+        
+        return formatted
+    
+    def _format_one_on_one_final_plan_for_slack(self, response: Dict[str, Any]) -> str:
+        """対話型具体化プロセス完了後の最終アクションプランをSlack用にフォーマット"""
+        
+        data = response.get("data", {})
+        final_summary = data.get("final_summary", {})
+        dialogue_summary = data.get("dialogue_summary", {})
+        clarification_history = response.get("clarification_history", [])
+        
+        # ヘッダー
+        formatted = "🎉 **1on1フィードバック 最終アクションプラン完成！**\n\n"
+        
+        # 対話サマリー
+        instructions_count = dialogue_summary.get("instructions_clarified", 0)
+        if instructions_count > 0:
+            formatted += f"✅ **対話完了**: {instructions_count}件の抽象的指示を具体化しました\n"
+            
+            # 具体化された指示の簡単な概要
+            if clarification_history:
+                formatted += "📋 **具体化された指示**:\n"
+                for i, history in enumerate(clarification_history[:3], 1):
+                    original = history.get("original_abstract", "")
+                    score = history.get("concreteness_score", 0)
+                    formatted += f"   {i}. {original} (具体性: {score}%)\n"
+                formatted += "\n"
+        
+        # 優先アクション
+        priority_actions = final_summary.get("priority_actions", [])
+        if priority_actions:
+            formatted += "🚀 **優先的に取り組むべきアクション**:\n"
+            for i, action in enumerate(priority_actions[:3], 1):
+                formatted += f"\n**{i}. {action.get('action', '')}**\n"
+                steps = action.get('specific_steps', [])
+                for step in steps[:3]:  # 最初の3ステップ
+                    formatted += f"   • {step}\n"
+                formatted += f"   📅 頻度: {action.get('frequency', '')}\n"
+                if action.get('measurement'):
+                    formatted += f"   📊 測定: {action['measurement']}\n"
+        
+        # 実装タイムライン
+        timeline = final_summary.get("implementation_timeline", {})
+        if timeline:
+            formatted += "\n📅 **実装スケジュール**:\n"
+            if timeline.get("immediately"):
+                formatted += f"🔴 **今すぐ**: {timeline['immediately']}\n"
+            if timeline.get("this_week"):
+                formatted += f"🟡 **今週中**: {timeline['this_week']}\n"
+            if timeline.get("this_month"):
+                formatted += f"🟢 **今月中**: {timeline['this_month']}\n"
+        
+        # 成功指標
+        metrics = final_summary.get("success_metrics", [])
+        if metrics:
+            formatted += "\n📊 **成功指標**:\n"
+            for metric in metrics[:2]:
+                formatted += f"• **{metric.get('metric', '')}**: {metric.get('target', '')}\n"
+        
+        # 次のステップ  
+        next_steps = final_summary.get("next_steps", [])
+        if next_steps:
+            formatted += "\n🎯 **次のステップ**:\n"
+            for step in next_steps[:3]:
+                formatted += f"• {step}\n"
+        
+        # 完了メッセージ
+        formatted += "\n✨ **お疲れ様でした！** 上司からの抽象的な指示が、明日から実行できる具体的なアクションプランになりました。"
+        
+        # 文字数制限対応
+        if len(formatted) > 3000:
+            formatted = formatted[:2900] + "\n\n_（詳細が省略されています）_"
         
         return formatted
     

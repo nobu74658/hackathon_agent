@@ -9,6 +9,7 @@ from datetime import datetime
 import json
 
 from app.services.conversation_memory import ConversationMemoryService
+from app.services.one_on_one_analyzer import OneOnOneAnalyzer
 from app.core.config import settings
 
 
@@ -33,6 +34,7 @@ class DialogueManager:
     
     def __init__(self):
         self.memory_service = ConversationMemoryService()
+        self.one_on_one_analyzer = OneOnOneAnalyzer()
         self.llm = ChatOpenAI(
             model=settings.OPENAI_MODEL,
             temperature=0.7,
@@ -40,6 +42,9 @@ class DialogueManager:
         )
         self.question_parser = PydanticOutputParser(pydantic_object=QuestionResponse)
         self.action_plan_parser = PydanticOutputParser(pydantic_object=ActionPlanResponse)
+        
+        # インメモリの1on1セッション状態管理（Redisがない場合の代替）
+        self._in_memory_sessions: Dict[str, Dict[str, Any]] = {}
     
     async def initialize(self):
         """サービスの初期化"""
@@ -107,37 +112,116 @@ class DialogueManager:
             db=db_session
         )
         
-        # 現在のコンテキストを取得
-        context = await self.memory_service.get_conversation_context(
-            session_id=session_id,
-            include_summary=True
-        )
+        # 1on1ミーティングの内容かどうかを判定
+        is_one_on_one = self._is_one_on_one_content(user_response)
         
-        # 情報の充足度を評価
-        completeness_score = await self._evaluate_completeness(context)
-        
-        # 対話の段階を判定
-        dialogue_stage = self._determine_dialogue_stage(context, completeness_score)
-        
-        if dialogue_stage == "action_plan" and completeness_score >= 95:
-            # 十分な情報が集まった場合、アクションプラン生成
-            action_plan = await self._generate_action_plan(context)
-            return {
-                "type": "action_plan",
-                "data": action_plan,
-                "completeness_score": completeness_score,
-                "stage": dialogue_stage
-            }
+        if is_one_on_one:
+            # 1on1の場合は対話型具体化プロセスを開始
+            user_id = session_id.replace("slack_", "")
+            
+            try:
+                # 1on1の初期分析を実行（上司の指示特定のみ）
+                abstract_instructions = await self._extract_supervisor_instructions_from_one_on_one(
+                    user_response, db_session
+                )
+                
+                # 対話セッションの状態を保存
+                await self._save_one_on_one_session_state(
+                    session_id, 
+                    user_response, 
+                    abstract_instructions,
+                    db_session
+                )
+                
+                # 最初の深掘り質問を生成
+                first_questions = await self._generate_initial_clarification_questions(
+                    abstract_instructions[0] if abstract_instructions else None,
+                    user_response
+                )
+                
+                return {
+                    "type": "one_on_one_clarification",
+                    "questions": first_questions,
+                    "instruction_being_clarified": abstract_instructions[0] if abstract_instructions else None,
+                    "total_instructions": len(abstract_instructions),
+                    "current_instruction_index": 0,
+                    "stage": "instruction_clarification",
+                    "stage_description": f"📋 上司の指示の具体化 (1/{len(abstract_instructions)})"
+                }
+                
+            except Exception as e:
+                return {
+                    "type": "error", 
+                    "message": f"1on1分析開始中にエラーが発生しました: {str(e)}"
+                }
         else:
-            # まだ情報が不足している場合、段階的な質問生成
-            follow_up_questions = await self._generate_stage_based_questions(context, dialogue_stage)
-            return {
-                "type": "follow_up",
-                "questions": follow_up_questions,
-                "completeness_score": completeness_score,
-                "stage": dialogue_stage,
-                "stage_description": self._get_stage_description(dialogue_stage)
-            }
+            # 1on1セッション継続中かチェック
+            one_on_one_session = await self._get_one_on_one_session_state(session_id)
+            
+            if one_on_one_session:
+                # 1on1セッション継続中 - 深掘り質問への回答を処理
+                try:
+                    return await self._continue_one_on_one_clarification(
+                        session_id, 
+                        user_response, 
+                        one_on_one_session,
+                        db_session
+                    )
+                except Exception as e:
+                    return {
+                        "type": "error",
+                        "message": f"1on1セッション継続中にエラーが発生しました: {str(e)}"
+                    }
+            
+            # 従来の質問ベースの対話
+            context = await self.memory_service.get_conversation_context(
+                session_id=session_id,
+                include_summary=True
+            )
+            
+            completeness_score = await self._evaluate_completeness(context)
+            
+            if completeness_score >= 80:
+                action_plan = await self._generate_action_plan(context)
+                return {
+                    "type": "action_plan",
+                    "data": action_plan,
+                    "completeness_score": completeness_score
+                }
+            else:
+                follow_up_questions = await self._generate_follow_up_questions(context)
+                return {
+                    "type": "follow_up",
+                    "questions": follow_up_questions,
+                    "completeness_score": completeness_score
+                }
+    
+    def _is_one_on_one_content(self, content: str) -> bool:
+        """1on1ミーティングの内容かどうかを判定"""
+        
+        # 1on1の特徴的なパターンを検出
+        one_on_one_indicators = [
+            # 対話形式
+            "：" in content and content.count("：") >= 2,  # 複数の話者
+            # 上司からの典型的なフィードバック
+            "距離を詰める" in content,
+            "信頼関係" in content,
+            "温度感" in content,
+            "課題に寄り添った" in content,
+            "もう少し" in content and "といいね" in content,
+            "がカギだと思う" in content,
+            "を意識して" in content,
+            # 営業活動への言及
+            "営業活動" in content and "調子" in content,
+            "新規アポ" in content,
+            "成約" in content,
+            # 長めのテキスト（1on1の内容は通常長い）
+            len(content) > 100
+        ]
+        
+        # 複数の指標が当てはまる場合は1on1と判定
+        matching_indicators = sum(1 for indicator in one_on_one_indicators if indicator)
+        return matching_indicators >= 3
     
     def _determine_dialogue_stage(self, context: Dict[str, Any], completeness_score: int) -> str:
         """対話の段階を判定"""
@@ -414,3 +498,553 @@ class DialogueManager:
         if state_data:
             return json.loads(state_data)
         return None
+    
+    # === 1on1対話型具体化システム ===
+    
+    async def _extract_supervisor_instructions_from_one_on_one(
+        self, 
+        one_on_one_content: str, 
+        db_session: Any
+    ) -> List[Dict[str, str]]:
+        """LLMを使って1on1から上司の抽象的指示を特定"""
+        
+        prompt_messages = [
+            SystemMessage(content="""1on1ミーティングの内容から、上司が新人営業マンに対して出した抽象的な指示や改善点を特定してください。
+
+以下の基準で「抽象的な指示」を特定してください：
+- 新人営業マンが「具体的にどうすればいいのかわからない」と感じるような指示
+- 「もっと〜する」「〜を意識する」「〜していけるといいね」のような表現
+- 具体的な行動手順が明確でない改善提案
+
+必ず以下のJSON形式で回答してください：
+```json
+{
+  "abstract_instructions": [
+    {
+      "original_text": "上司の発言そのまま",
+      "abstract_concept": "抽象的な概念（例：距離を詰める、信頼関係構築）",
+      "category": "カテゴリ（customer_relationship, trust_building, communication等）",
+      "urgency": "優先度（high, medium, low）"
+    }
+  ]
+}
+```"""),
+            HumanMessage(content=f"以下の1on1内容から抽象的な指示を特定してください：\n\n{one_on_one_content}")
+        ]
+        
+        try:
+            response = await self.llm.ainvoke(prompt_messages)
+            response_text = response.content.strip()
+            
+            # JSONを抽出
+            if "```json" in response_text:
+                json_start = response_text.find("```json") + 7
+                json_end = response_text.find("```", json_start)
+                if json_end != -1:
+                    response_text = response_text[json_start:json_end].strip()
+            
+            parsed_response = json.loads(response_text)
+            return parsed_response.get("abstract_instructions", [])
+            
+        except Exception as e:
+            # エラーの場合は基本的な指示を返す
+            return [{
+                "original_text": "上司からの改善指示",
+                "abstract_concept": "営業スキル向上",
+                "category": "general_improvement",
+                "urgency": "medium"
+            }]
+    
+    async def _save_one_on_one_session_state(
+        self, 
+        session_id: str, 
+        original_content: str, 
+        instructions: List[Dict[str, str]],
+        db_session: Any
+    ) -> None:
+        """1on1セッションの状態を保存"""
+        
+        state_data = {
+            "type": "one_on_one_clarification",
+            "original_content": original_content,
+            "abstract_instructions": instructions,
+            "current_instruction_index": 0,
+            "clarified_instructions": [],  # 具体化された指示を保存
+            "conversation_history": [],  # 各指示の具体化対話履歴
+            "started_at": datetime.utcnow().isoformat()
+        }
+        
+        # Redisに保存を試行、失敗したらインメモリに保存
+        if self.memory_service.redis_client:
+            try:
+                session_key = f"one_on_one_session:{session_id}"
+                await self.memory_service.redis_client.setex(
+                    session_key,
+                    86400,  # 24時間
+                    json.dumps(state_data, ensure_ascii=False)
+                )
+            except Exception:
+                # Redisエラーの場合はインメモリにフォールバック
+                self._in_memory_sessions[session_id] = state_data
+        else:
+            # Redisがない場合はインメモリに保存
+            self._in_memory_sessions[session_id] = state_data
+    
+    async def _get_one_on_one_session_state(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """1on1セッションの状態を取得"""
+        
+        # まずRedisから取得を試行
+        if self.memory_service.redis_client:
+            try:
+                session_key = f"one_on_one_session:{session_id}"
+                state_data = await self.memory_service.redis_client.get(session_key)
+                if state_data:
+                    return json.loads(state_data)
+            except Exception:
+                pass  # Redisエラーの場合はインメモリから取得
+        
+        # Redisがない場合やエラーの場合はインメモリから取得
+        return self._in_memory_sessions.get(session_id)
+    
+    async def _generate_initial_clarification_questions(
+        self, 
+        instruction: Dict[str, str], 
+        original_content: str
+    ) -> List[str]:
+        """最初の深掘り質問を生成"""
+        
+        if not instruction:
+            return ["1on1の内容について、どの部分を最も改善したいと感じていますか？"]
+        
+        abstract_concept = instruction.get("abstract_concept", "")
+        original_text = instruction.get("original_text", "")
+        
+        prompt_messages = [
+            SystemMessage(content=f"""新人営業マンが上司から「{abstract_concept}」という抽象的な指示を受けました。
+この指示を具体的な行動レベルまで落とし込むために、最初の深掘り質問を3-4個生成してください。
+
+質問の目的：
+- 新人がどのような場面で困っているのかを特定
+- 現在の行動パターンを把握
+- 具体的な改善点を見つける
+
+質問は以下の形式で：
+1. 現状把握の質問
+2. 困難な場面の特定
+3. 理想的な状態の確認
+4. 具体的な行動への言及
+
+1行ずつ「Q: 」で始まる形式で回答してください。"""),
+            HumanMessage(content=f"上司の指示: \"{original_text}\"\n抽象概念: {abstract_concept}\n\n深掘り質問を生成してください。")
+        ]
+        
+        try:
+            response = await self.llm.ainvoke(prompt_messages)
+            
+            # 質問を抽出
+            questions = []
+            for line in response.content.split('\n'):
+                line = line.strip()
+                if line.startswith('Q:'):
+                    questions.append(line[2:].strip())
+                elif line.startswith('質問') and ':' in line:
+                    questions.append(line.split(':', 1)[-1].strip())
+                elif line and not line.startswith(('1.', '2.', '3.', '4.', '-', '・')):
+                    # 番号なしの質問も拾う
+                    if '？' in line or '?' in line:
+                        questions.append(line)
+            
+            return questions[:4] if questions else [
+                f"「{abstract_concept}」について、どのような場面で最も困難を感じますか？",
+                f"現在、{abstract_concept}のためにどのような取り組みをしていますか？",
+                f"理想的には{abstract_concept}がどのような状態になれば良いと思いますか？"
+            ]
+            
+        except Exception:
+            return [
+                f"「{abstract_concept}」について、どのような場面で最も困難を感じますか？",
+                f"現在、{abstract_concept}のためにどのような取り組みをしていますか？"
+            ]
+    
+    async def _continue_one_on_one_clarification(
+        self, 
+        session_id: str, 
+        user_response: str, 
+        session_state: Dict[str, Any],
+        db_session: Any
+    ) -> Dict[str, Any]:
+        """1on1具体化プロセスの継続処理（自律的な判断）"""
+        
+        current_index = session_state.get("current_instruction_index", 0)
+        instructions = session_state.get("abstract_instructions", [])
+        conversation_history = session_state.get("conversation_history", [])
+        
+        if current_index >= len(instructions):
+            # 全ての指示が処理済み → 最終アクションプラン生成
+            return await self._generate_final_action_plan_from_session(session_id, session_state, db_session)
+        
+        current_instruction = instructions[current_index]
+        
+        # 現在の対話履歴に新人の回答を追加
+        if current_index < len(conversation_history):
+            conversation_history[current_index].append({
+                "role": "user",
+                "content": user_response,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+        else:
+            # 新しい指示の対話開始
+            conversation_history.append([{
+                "role": "user", 
+                "content": user_response,
+                "timestamp": datetime.utcnow().isoformat()
+            }])
+        
+        # 具体性をチェック
+        concreteness_result = await self._check_instruction_concreteness(
+            current_instruction, 
+            conversation_history[current_index],
+            user_response
+        )
+        
+        is_concrete = concreteness_result.get("is_concrete", False)
+        concreteness_score = concreteness_result.get("score", 0)
+        missing_details = concreteness_result.get("missing_details", [])
+        
+        if is_concrete and concreteness_score >= 80:
+            # 十分具体的 → 次の指示へ移動
+            session_state["clarified_instructions"].append({
+                "instruction": current_instruction,
+                "conversation": conversation_history[current_index],
+                "final_response": user_response,
+                "concreteness_score": concreteness_score,
+                "clarified_at": datetime.utcnow().isoformat()
+            })
+            
+            session_state["current_instruction_index"] = current_index + 1
+            session_state["conversation_history"] = conversation_history
+            
+            # セッション状態を更新
+            await self._update_one_on_one_session_state(session_id, session_state)
+            
+            # 次の指示があるかチェック
+            if current_index + 1 < len(instructions):
+                next_instruction = instructions[current_index + 1]
+                next_questions = await self._generate_initial_clarification_questions(
+                    next_instruction, 
+                    session_state.get("original_content", "")
+                )
+                
+                return {
+                    "type": "one_on_one_clarification",
+                    "questions": next_questions,
+                    "instruction_being_clarified": next_instruction,
+                    "total_instructions": len(instructions),
+                    "current_instruction_index": current_index + 1,
+                    "stage": "instruction_clarification",
+                    "stage_description": f"📋 上司の指示の具体化 ({current_index + 2}/{len(instructions)})",
+                    "previous_instruction_completed": current_instruction.get("abstract_concept", ""),
+                    "concreteness_achieved": concreteness_score
+                }
+            else:
+                # 全ての指示が具体化完了 → 最終アクションプラン生成
+                return await self._generate_final_action_plan_from_session(session_id, session_state, db_session)
+        
+        else:
+            # まだ抽象的 → より深い質問を生成
+            deeper_questions = await self._generate_deeper_clarification_questions(
+                current_instruction,
+                conversation_history[current_index],
+                missing_details,
+                concreteness_score
+            )
+            
+            # 対話履歴にAIの質問を追加
+            conversation_history[current_index].append({
+                "role": "assistant",
+                "content": f"深掘り質問: {deeper_questions}",
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            
+            session_state["conversation_history"] = conversation_history
+            await self._update_one_on_one_session_state(session_id, session_state)
+            
+            return {
+                "type": "one_on_one_clarification",
+                "questions": deeper_questions,
+                "instruction_being_clarified": current_instruction,
+                "total_instructions": len(instructions),
+                "current_instruction_index": current_index,
+                "stage": "instruction_clarification",
+                "stage_description": f"📋 上司の指示の具体化 ({current_index + 1}/{len(instructions)}) - 更に詳しく",
+                "concreteness_feedback": f"具体性: {concreteness_score}% - より詳細な情報が必要です",
+                "missing_aspects": missing_details[:3]  # 最大3つの不足要素を表示
+            }
+    
+    async def _check_instruction_concreteness(
+        self, 
+        instruction: Dict[str, str], 
+        conversation_history: List[Dict[str, str]],
+        latest_response: str
+    ) -> Dict[str, Any]:
+        """指示の具体性をLLMでチェック"""
+        
+        abstract_concept = instruction.get("abstract_concept", "")
+        
+        # 会話履歴をテキスト化
+        conversation_text = "\\n".join([
+            f"{entry['role']}: {entry['content']}" for entry in conversation_history
+        ])
+        
+        prompt_messages = [
+            SystemMessage(content=f"""営業コーチとして、新人営業マンの回答が十分具体的かを評価してください。
+
+評価対象の抽象的指示: "{abstract_concept}"
+
+具体性の基準：
+- 明日から実行できる具体的な行動が明確か
+- 頻度、タイミング、方法が具体的に示されているか
+- 新人が「何をすればいいかわからない」状態を脱却できているか
+- 測定可能な要素があるか
+
+例：
+❌ 抽象的: "もっと相手の気持ちを理解する"
+✅ 具体的: "商談開始時に3分間、相手の最近の業務状況を質問し、メモを取る"
+
+以下のJSON形式で評価してください：
+```json
+{{
+  "is_concrete": true/false,
+  "score": 0-100,
+  "missing_details": ["不足している具体的要素1", "不足している具体的要素2"],
+  "concrete_aspects": ["具体的になっている要素1", "具体的になっている要素2"],
+  "next_focus": "次に重点的に聞くべき点"
+}}
+```"""),
+            HumanMessage(content=f"会話履歴：\\n{conversation_text}\\n\\n最新の回答: {latest_response}\\n\\n具体性を評価してください。")
+        ]
+        
+        try:
+            response = await self.llm.ainvoke(prompt_messages)
+            response_text = response.content.strip()
+            
+            # JSONを抽出
+            if "```json" in response_text:
+                json_start = response_text.find("```json") + 7
+                json_end = response_text.find("```", json_start)
+                if json_end != -1:
+                    response_text = response_text[json_start:json_end].strip()
+            
+            return json.loads(response_text)
+            
+        except Exception:
+            # エラーの場合はもう少し深掘りが必要と判定
+            return {
+                "is_concrete": False,
+                "score": 40,
+                "missing_details": ["具体的な手順", "実行タイミング", "測定方法"],
+                "concrete_aspects": [],
+                "next_focus": "より詳細な実行方法"
+            }
+    
+    async def _update_one_on_one_session_state(self, session_id: str, state_data: Dict[str, Any]) -> None:
+        """1on1セッション状態を更新"""
+        # Redisに保存を試行、失敗したらインメモリに保存
+        if self.memory_service.redis_client:
+            try:
+                session_key = f"one_on_one_session:{session_id}"
+                await self.memory_service.redis_client.setex(
+                    session_key,
+                    86400,  # 24時間
+                    json.dumps(state_data, ensure_ascii=False)
+                )
+            except Exception:
+                # Redisエラーの場合はインメモリにフォールバック
+                self._in_memory_sessions[session_id] = state_data
+        else:
+            # Redisがない場合はインメモリに保存
+            self._in_memory_sessions[session_id] = state_data
+    
+    async def _generate_deeper_clarification_questions(
+        self, 
+        instruction: Dict[str, str], 
+        conversation_history: List[Dict[str, str]],
+        missing_details: List[str],
+        concreteness_score: int
+    ) -> List[str]:
+        """より深い具体化質問を生成"""
+        
+        abstract_concept = instruction.get("abstract_concept", "")
+        
+        # 会話履歴をテキスト化
+        conversation_text = "\\n".join([
+            f"{entry['role']}: {entry['content']}" for entry in conversation_history
+        ])
+        
+        prompt_messages = [
+            SystemMessage(content=f"""新人営業マンの回答はまだ抽象的です（具体性: {concreteness_score}%）。
+更に具体的な質問をして、明日から実行できるレベルまで落とし込んでください。
+
+対象の抽象的指示: "{abstract_concept}"
+不足している要素: {missing_details}
+
+より深い質問の観点：
+- 具体的な場面・シチュエーション
+- 実行する頻度とタイミング
+- 具体的な手順・ステップ
+- 測定・確認方法
+- 必要なツールや準備
+
+「相手に合わせたトーンと話し方を意識する」のような抽象的な回答を避け、
+「商談開始時に、相手の話すスピードに合わせて自分も話すスピードを調整し、
+相手が専門用語を使う場合は同レベルの用語で、使わない場合は分かりやすい言葉で説明する」
+のような具体性を引き出してください。
+
+1行ずつ「Q: 」で始まる形式で2-3個の質問を生成してください。"""),
+            HumanMessage(content=f"これまでの会話：\\n{conversation_text}\\n\\nより具体的にするための深掘り質問を生成してください。")
+        ]
+        
+        try:
+            response = await self.llm.ainvoke(prompt_messages)
+            
+            # 質問を抽出
+            questions = []
+            for line in response.content.split('\\n'):
+                line = line.strip()
+                if line.startswith('Q:'):
+                    questions.append(line[2:].strip())
+                elif '？' in line or '?' in line:
+                    if not line.startswith(('例：', '※', '注：')):
+                        questions.append(line)
+            
+            return questions[:3] if questions else [
+                f"「{abstract_concept}」を実行する具体的な場面を教えてください（どんな時に、誰に対して、どのように？）",
+                f"その行動をどのくらいの頻度で実行しますか？（毎日、週1回、商談毎など）",
+                f"うまくできているかどうかを、どのように確認・測定しますか？"
+            ]
+            
+        except Exception:
+            return [
+                f"「{abstract_concept}」を実行する具体的な場面を教えてください",
+                f"その行動の具体的な手順を教えてください",
+                f"成果をどのように測定しますか？"
+            ]
+    
+    async def _generate_final_action_plan_from_session(
+        self, 
+        session_id: str, 
+        session_state: Dict[str, Any], 
+        db_session: Any
+    ) -> Dict[str, Any]:
+        """対話型具体化プロセスから最終アクションプランを生成"""
+        
+        clarified_instructions = session_state.get("clarified_instructions", [])
+        original_content = session_state.get("original_content", "")
+        
+        if not clarified_instructions:
+            return {
+                "type": "error",
+                "message": "具体化された指示がありません。もう一度1on1の内容から始めてください。"
+            }
+        
+        # 具体化された全ての指示をまとめる
+        all_clarifications = []
+        for clarified in clarified_instructions:
+            instruction = clarified["instruction"]
+            conversation = clarified["conversation"]
+            final_response = clarified["final_response"]
+            
+            all_clarifications.append({
+                "original_abstract": instruction.get("abstract_concept", ""),
+                "clarification_conversation": conversation,
+                "concrete_outcome": final_response,
+                "concreteness_score": clarified.get("concreteness_score", 0)
+            })
+        
+        # LLMに最終アクションプラン生成を依頼
+        clarifications_text = "\\n\\n".join([
+            f"指示: {c['original_abstract']}\\n具体化結果: {c['concrete_outcome']}"
+            for c in all_clarifications
+        ])
+        
+        prompt_messages = [
+            SystemMessage(content=f"""新人営業マンとの対話を通じて、上司の抽象的な指示が具体化されました。
+これらの具体化された内容を統合して、実践的な最終アクションプランを作成してください。
+
+以下のJSON形式で回答してください：
+```json
+{{
+  "final_summary": {{
+    "title": "1on1フィードバック 最終アクションプラン",
+    "priority_actions": [
+      {{
+        "action": "具体的なアクション",
+        "specific_steps": ["ステップ1", "ステップ2", "ステップ3"],
+        "frequency": "実行頻度",
+        "measurement": "成果測定方法"
+      }}
+    ],
+    "implementation_timeline": {{
+      "immediately": "今すぐ実行すること",
+      "this_week": "今週中に実行すること", 
+      "this_month": "今月中に実行すること"
+    }},
+    "success_metrics": [
+      {{
+        "metric": "測定指標",
+        "target": "目標値",
+        "how_to_measure": "測定方法"
+      }}
+    ],
+    "next_steps": ["次のステップ1", "次のステップ2"]
+  }},
+  "dialogue_summary": {{
+    "instructions_clarified": {len(clarified_instructions)},
+    "total_interactions": "対話の総数",
+    "key_insights": ["洞察1", "洞察2"],
+    "concreteness_improvement": "具体性の向上度"
+  }}
+}}
+```
+
+重要: 全て新人営業マンが明日から実行できる具体的な内容にしてください。"""),
+            HumanMessage(content=f"元の1on1内容：\\n{original_content}\\n\\n具体化された指示：\\n{clarifications_text}\\n\\n最終アクションプランを生成してください。")
+        ]
+        
+        try:
+            response = await self.llm.ainvoke(prompt_messages)
+            response_text = response.content.strip()
+            
+            # JSONを抽出
+            if "```json" in response_text:
+                json_start = response_text.find("```json") + 7
+                json_end = response_text.find("```", json_start)
+                if json_end != -1:
+                    response_text = response_text[json_start:json_end].strip()
+            
+            action_plan_data = json.loads(response_text)
+            
+            # 1on1セッションを完了としてマーク（削除）
+            if self.memory_service.redis_client:
+                try:
+                    session_key = f"one_on_one_session:{session_id}"
+                    await self.memory_service.redis_client.delete(session_key)
+                except Exception:
+                    pass  # Redisエラーは無視
+            
+            # インメモリからも削除
+            if session_id in self._in_memory_sessions:
+                del self._in_memory_sessions[session_id]
+            
+            return {
+                "type": "one_on_one_final_plan",
+                "data": action_plan_data,
+                "clarification_history": all_clarifications,
+                "analysis_method": "dialogue_based_concretization"
+            }
+            
+        except Exception as e:
+            return {
+                "type": "error",
+                "message": f"最終アクションプラン生成中にエラーが発生しました: {str(e)}"
+            }
