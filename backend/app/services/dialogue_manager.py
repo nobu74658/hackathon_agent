@@ -742,6 +742,17 @@ class DialogueManager:
         
         current_instruction = instructions[current_index]
         
+        # 🎯 ユーザー要求チェック: 具体的な要求があるかチェック
+        user_request = await self._check_for_specific_user_request(
+            user_response, current_instruction
+        )
+        
+        if user_request:
+            # 具体的要求に応答
+            return await self._handle_specific_user_request(
+                user_request, current_instruction, session_id, db_session
+            )
+        
         # 🎓 教育的チェック: 新人が概念を理解していないかチェック
         needs_explanation = await self._check_if_needs_concept_explanation(
             user_response, current_instruction
@@ -1384,3 +1395,225 @@ true（説明が必要）またはfalse（理解している）で回答して�
 これは営業活動において重要な要素の一つです。具体的には、お客様とのやり取りや提案活動で意識すべきポイントを指しています。
 
 まずは「{abstract_concept}」がどういうものか、一緒に具体的に考えていきましょう。"""
+    
+    # === ユーザー要求認識・応答機能 ===
+    
+    async def _check_for_specific_user_request(
+        self,
+        user_response: str,
+        instruction: Dict[str, Any]
+    ) -> Optional[Dict[str, str]]:
+        """ユーザーの具体的な要求をチェック"""
+        
+        # 明確な要求のパターン
+        request_patterns = {
+            "example_request": ["例を", "具体例", "サンプル", "実例", "作成して", "見せて", "教えて"],
+            "template_request": ["テンプレート", "フォーマット", "ひな形", "様式"],
+            "reference_request": ["参考", "お手本", "見本", "良い例"],
+            "knowledge_request": ["ナレッジ", "資料", "ドキュメント", "先輩の", "社内の"]
+        }
+        
+        # パターンマッチング
+        for request_type, patterns in request_patterns.items():
+            if any(pattern in user_response for pattern in patterns):
+                return {
+                    "type": request_type,
+                    "original_request": user_response,
+                    "abstract_concept": instruction.get("abstract_concept", "")
+                }
+        
+        # LLMによる詳細チェック
+        abstract_concept = instruction.get("abstract_concept", "")
+        
+        prompt_messages = [
+            SystemMessage(content=f"""新人営業マンの回答を分析し、「{abstract_concept}」に関する具体的な要求があるかを判定してください。
+
+要求の種類：
+- example_request: 具体例・サンプルの要求
+- template_request: テンプレート・フォーマットの要求  
+- reference_request: 参考資料・お手本の要求
+- knowledge_request: 社内ナレッジ・先輩の資料の要求
+- help_request: 作成支援・手伝いの要求
+
+以下の形式で回答してください：
+```json
+{{
+  "has_request": true/false,
+  "request_type": "要求の種類（上記から選択）",
+  "confidence": 0.0-1.0
+}}
+```
+
+要求がない場合は has_request: false で回答してください。"""),
+            HumanMessage(content=f"概念: {abstract_concept}\n新人の回答: {user_response}\n\n具体的な要求がありますか？")
+        ]
+        
+        try:
+            response = await self.llm.ainvoke(prompt_messages)
+            response_text = response.content.strip()
+            
+            # JSONを抽出
+            if "```json" in response_text:
+                json_start = response_text.find("```json") + 7
+                json_end = response_text.find("```", json_start)
+                if json_end != -1:
+                    response_text = response_text[json_start:json_end].strip()
+            
+            result = json.loads(response_text)
+            
+            if result.get("has_request", False) and result.get("confidence", 0) > 0.6:
+                return {
+                    "type": result.get("request_type", "example_request"),
+                    "original_request": user_response,
+                    "abstract_concept": abstract_concept,
+                    "confidence": result.get("confidence", 0)
+                }
+            
+            return None
+            
+        except Exception:
+            return None
+    
+    async def _handle_specific_user_request(
+        self,
+        user_request: Dict[str, str],
+        instruction: Dict[str, Any],
+        session_id: str,
+        db_session: Any
+    ) -> Dict[str, Any]:
+        """ユーザーの具体的要求に応答"""
+        
+        request_type = user_request.get("type", "")
+        abstract_concept = user_request.get("abstract_concept", "")
+        original_request = user_request.get("original_request", "")
+        
+        if request_type in ["example_request", "template_request", "reference_request", "knowledge_request"]:
+            # 社内ナレッジベースから実例を検索・提供
+            knowledge_response = await self._provide_knowledge_examples(
+                abstract_concept, request_type, db_session
+            )
+            
+            return {
+                "type": "knowledge_provision",
+                "knowledge_response": knowledge_response,
+                "instruction_being_clarified": instruction,
+                "stage": "knowledge_provision",
+                "stage_description": f"📚 社内ナレッジ提供: 「{abstract_concept}」の実例",
+                "original_request": original_request,
+                "follow_up": "この実例を参考に、あなたの経験や状況について教えてください。対話を続けてより具体的なアクションプランを作成しましょう。"
+            }
+        else:
+            # その他の要求への対応
+            return {
+                "type": "request_acknowledgment", 
+                "message": f"「{original_request}」というご要求を承りました。「{abstract_concept}」について、まず基本的な理解を深めてから、より具体的な支援を提供させていただきます。",
+                "instruction_being_clarified": instruction,
+                "stage": "request_acknowledgment"
+            }
+    
+    async def _provide_knowledge_examples(
+        self,
+        abstract_concept: str,
+        request_type: str,
+        db_session: Any
+    ) -> str:
+        """社内ナレッジベースから実例を提供"""
+        
+        # 社内ナレッジベースアクセス（実装例）
+        knowledge_examples = await self._search_knowledge_base(
+            abstract_concept, request_type, db_session
+        )
+        
+        if knowledge_examples:
+            formatted_examples = self._format_knowledge_examples(
+                knowledge_examples, abstract_concept, request_type
+            )
+            return formatted_examples
+        else:
+            # ナレッジがない場合のフォールバック
+            return await self._generate_synthetic_examples(abstract_concept, request_type)
+    
+    async def _search_knowledge_base(
+        self,
+        abstract_concept: str,
+        request_type: str,
+        db_session: Any
+    ) -> List[Dict[str, Any]]:
+        """社内ナレッジベースを検索"""
+        
+        # 実際のナレッジベース検索実装
+        # ここでは簡単な例を示す
+        try:
+            # データベースやナレッジベースから関連資料を検索
+            # 例: SELECT * FROM knowledge_base WHERE concept LIKE %abstract_concept%
+            
+            # 仮の実装（実際は社内ナレッジシステムにアクセス）
+            sample_knowledge = [
+                {
+                    "title": f"{abstract_concept}の成功事例",
+                    "content": f"先輩営業マンが{abstract_concept}で成果を上げた実例",
+                    "author": "佐藤部長",
+                    "tags": [abstract_concept, "営業", "成功事例"]
+                }
+            ]
+            
+            return sample_knowledge
+            
+        except Exception:
+            return []
+    
+    def _format_knowledge_examples(
+        self,
+        knowledge_examples: List[Dict[str, Any]],
+        abstract_concept: str,
+        request_type: str
+    ) -> str:
+        """ナレッジ例をフォーマット"""
+        
+        if request_type == "example_request":
+            header = f"📚 **「{abstract_concept}」の社内実例**"
+        elif request_type == "template_request":
+            header = f"📋 **「{abstract_concept}」のテンプレート**"
+        elif request_type == "reference_request":
+            header = f"🎯 **「{abstract_concept}」の参考資料**"
+        else:
+            header = f"💡 **「{abstract_concept}」の社内ナレッジ**"
+        
+        formatted = f"{header}\n\n"
+        
+        for i, example in enumerate(knowledge_examples, 1):
+            formatted += f"**{i}. {example.get('title', '例')}**\n"
+            formatted += f"{example.get('content', '')}\n"
+            if example.get('author'):
+                formatted += f"_作成者: {example['author']}_\n"
+            formatted += "\n"
+        
+        return formatted
+    
+    async def _generate_synthetic_examples(
+        self,
+        abstract_concept: str,
+        request_type: str
+    ) -> str:
+        """ナレッジがない場合の合成例生成"""
+        
+        prompt_messages = [
+            SystemMessage(content=f"""新人営業マンが「{abstract_concept}」の{request_type}を求めています。
+
+営業現場で実際に使える具体的な例を3つ提供してください：
+
+要求タイプ: {request_type}
+- example_request: 具体的な実行例
+- template_request: 実用的なテンプレート
+- reference_request: 参考になる資料例
+- knowledge_request: 実践的なノウハウ
+
+新人営業マンが明日から実践できる、具体的で実用的な内容にしてください。"""),
+            HumanMessage(content=f"「{abstract_concept}」の{request_type}を提供してください。")
+        ]
+        
+        try:
+            response = await self.llm.ainvoke(prompt_messages)
+            return f"💡 **「{abstract_concept}」の実践例**\n\n{response.content.strip()}"
+        except Exception:
+            return f"「{abstract_concept}」について、より詳しい情報をお調べして後ほど提供いたします。まずは基本的な理解から始めましょう。"

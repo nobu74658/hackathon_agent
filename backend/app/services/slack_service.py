@@ -166,6 +166,12 @@ class SlackService:
             elif response["type"] == "educational_explanation":
                 # 🎓 教育的概念説明
                 formatted_response = self._format_educational_explanation_for_slack(response)
+            elif response["type"] == "knowledge_provision":
+                # 📚 社内ナレッジ提供
+                formatted_response = self._format_knowledge_provision_for_slack(response)
+            elif response["type"] == "request_acknowledgment":
+                # 📋 要求受理確認
+                formatted_response = self._format_request_acknowledgment_for_slack(response)
             elif response["type"] == "action_plan":
                 action_plan = response["data"]
                 formatted_response = self._format_action_plan_for_slack(action_plan, response["completeness_score"])
@@ -463,6 +469,34 @@ class SlackService:
         # 文字数制限対応
         if len(formatted) > 3000:
             formatted = formatted[:2900] + "\n\n_（詳細が省略されています）_"
+        
+        return formatted
+    
+    def _format_knowledge_provision_for_slack(self, response: Dict[str, Any]) -> str:
+        """社内ナレッジ提供をSlack用にフォーマット"""
+        knowledge_response = response.get("knowledge_response", "")
+        original_request = response.get("original_request", "")
+        follow_up = response.get("follow_up", "")
+        stage_description = response.get("stage_description", "")
+        
+        formatted = f"📚 **{stage_description}**\n\n"
+        formatted += f"✨ **ご要求**: {original_request}\n\n"
+        formatted += f"{knowledge_response}\n\n"
+        formatted += f"💡 **次のステップ**\n{follow_up}"
+        
+        # 文字数制限対応
+        if len(formatted) > 3000:
+            formatted = formatted[:2900] + "\n\n_（詳細が省略されています）_"
+        
+        return formatted
+    
+    def _format_request_acknowledgment_for_slack(self, response: Dict[str, Any]) -> str:
+        """要求受理確認をSlack用にフォーマット"""
+        message = response.get("message", "")
+        
+        formatted = f"📋 **ご要求を承りました**\n\n"
+        formatted += f"{message}\n\n"
+        formatted += "💭 より良いサポートのため、対話を続けさせていただきます。"
         
         return formatted
     
