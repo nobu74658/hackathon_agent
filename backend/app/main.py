@@ -8,6 +8,7 @@ import logging
 from app.core.config import settings
 from app.api.test_endpoints import router as test_router
 from app.api.llm_demo_endpoints import router as demo_router
+from app.api.slack_endpoints import router as slack_router
 
 # ロギング設定
 logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL))
@@ -32,6 +33,7 @@ app.add_middleware(
 # ルーター登録
 app.include_router(test_router)
 app.include_router(demo_router)
+app.include_router(slack_router, prefix="/api")
 
 
 # テスト用のモデル
