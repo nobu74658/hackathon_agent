@@ -15,6 +15,7 @@ import json
 from app.services.conversation_memory import ConversationMemoryService
 from app.services.knowledge_base_service import KnowledgeBaseService
 from app.services.action_template_generator import ActionTemplateGenerator
+from app.services.conversation_history_service import ConversationHistoryService
 from app.core.config import settings
 
 
@@ -54,6 +55,7 @@ class EnhancedDialogueManager:
         self.memory_service = ConversationMemoryService()
         self.knowledge_service = KnowledgeBaseService()
         self.template_generator = ActionTemplateGenerator()
+        self.history_service = ConversationHistoryService()
         self.llm = ChatOpenAI(
             model=settings.OPENAI_MODEL,
             temperature=0.7,
@@ -70,9 +72,11 @@ class EnhancedDialogueManager:
     async def start_dialogue(
         self,
         session_id: str,
-        initial_context: Dict[str, Any]
+        initial_context: Dict[str, Any],
+        user_id: Optional[str] = None,
+        db_session: Optional[Any] = None
     ) -> Tuple[List[str], Dict[str, Any]]:
-        """対話セッションを開始（改善版）"""
+        """対話セッションを開始（改善版 + 会話履歴活用）"""
         
         # 初期コンテキストから関連知識を検索
         topic = initial_context.get("topic", "")
@@ -81,7 +85,35 @@ class EnhancedDialogueManager:
         # 会社の価値観を取得
         company_values = await self.knowledge_service.get_company_values()
         
-        # 初期質問生成のプロンプト（知識ベース活用）
+        # ユーザーの過去の会話履歴と洞察を取得
+        past_insights = []
+        user_profile = None
+        conversation_history = []
+        
+        if user_id and db_session:
+            # 過去の会話履歴を取得
+            conversation_history = await self.history_service.get_user_conversation_history(
+                user_id=user_id,
+                db=db_session,
+                limit=5
+            )
+            
+            # 過去の洞察を取得
+            past_insights = await self.history_service.get_relevant_past_insights(
+                user_id=user_id,
+                current_topic=topic,
+                db=db_session
+            )
+            
+            # ユーザープロファイルを取得
+            from sqlalchemy import select
+            from app.models.dialogue import UserProfile
+            profile_result = await db_session.execute(
+                select(UserProfile).where(UserProfile.user_id == user_id)
+            )
+            user_profile = profile_result.scalar_one_or_none()
+        
+        # パーソナライズされた質問生成のプロンプト
         prompt = ChatPromptTemplate.from_messages([
             ("system", """あなたは新人営業マンの成長を支援するAIアシスタントです。
             会社のミッション・ビジョン・バリューに基づいて、営業スキル向上のための支援を行います。
@@ -95,15 +127,23 @@ class EnhancedDialogueManager:
             初期コンテキスト：
             {initial_context}
             
+            過去の洞察：
+            {past_insights}
+            
+            ユーザープロファイル：
+            {user_profile}
+            
             以下の点を考慮して、効果的な質問を生成してください：
             1. まず社内ナレッジから回答できる部分は自己解決する
-            2. 本当に新人から聞く必要がある情報のみ質問する
-            3. 質問の負荷を最小限に抑える
-            4. 具体的で答えやすい質問にする
+            2. 過去の会話で既に議論した内容は繰り返さない
+            3. ユーザーの傾向や好みに合わせてパーソナライズする
+            4. 本当に新人から聞く必要がある情報のみ質問する
+            5. 質問の負荷を最小限に抑える
+            6. 具体的で答えやすい質問にする
             
             {format_instructions}
             """),
-            ("user", "社内ナレッジを活用しながら、必要最小限の質問を生成してください。")
+            ("user", "社内ナレッジと過去の履歴を活用しながら、最適な質問を生成してください。")
         ])
         
         # チェーン構築
@@ -112,6 +152,12 @@ class EnhancedDialogueManager:
                 "initial_context": RunnablePassthrough(),
                 "company_values": lambda _: json.dumps(company_values, ensure_ascii=False),
                 "relevant_knowledge": lambda _: json.dumps(relevant_knowledge, ensure_ascii=False),
+                "past_insights": lambda _: json.dumps(past_insights, ensure_ascii=False),
+                "user_profile": lambda _: json.dumps({
+                    "common_challenges": user_profile.common_challenges if user_profile else [],
+                    "strengths": user_profile.strengths if user_profile else [],
+                    "learning_style": user_profile.preferred_learning_style if user_profile else None
+                }, ensure_ascii=False),
                 "format_instructions": lambda _: self.question_parser.get_format_instructions()
             }
             | prompt
@@ -130,7 +176,9 @@ class EnhancedDialogueManager:
             "completeness_score": response.completeness_score,
             "self_resolved_insights": response.self_resolved_insights,
             "suggested_resources": response.suggested_resources,
-            "knowledge_used": len(relevant_knowledge) > 0
+            "knowledge_used": len(relevant_knowledge) > 0,
+            "history_used": len(past_insights) > 0,
+            "user_sessions_count": user_profile.total_sessions if user_profile else 0
         }
         
         return response.questions, metadata
@@ -176,9 +224,10 @@ class EnhancedDialogueManager:
         self,
         session_id: str,
         user_response: str,
-        db_session: Any
+        db_session: Any,
+        user_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """ユーザーの回答を処理（改善版）"""
+        """ユーザーの回答を処理（改善版 + 会話履歴活用）"""
         
         # メモリに回答を追加
         await self.memory_service.add_message(
@@ -204,21 +253,77 @@ class EnhancedDialogueManager:
             if solution:
                 solutions.append(solution)
         
-        # 情報の充足度を評価
-        completeness_score = await self._evaluate_completeness(context, solutions)
+        # 過去の洞察を活用
+        past_insights = []
+        user_profile = None
+        
+        if user_id and db_session:
+            # 現在の会話から洞察を抽出して保存
+            conversation_history = [context]
+            insights = await self.history_service.extract_insights_from_history(
+                user_id=user_id,
+                conversation_history=conversation_history
+            )
+            
+            # 洞察を保存
+            await self.history_service.save_insights(
+                user_id=user_id,
+                session_id=session_id,
+                insights=insights,
+                db=db_session
+            )
+            
+            # ユーザープロファイルを更新
+            user_profile = await self.history_service.update_user_profile(
+                user_id=user_id,
+                insights=insights,
+                db=db_session
+            )
+            
+            # 会話パターンを保存
+            if insights.patterns:
+                await self.history_service.save_conversation_patterns(
+                    user_id=user_id,
+                    patterns=insights.patterns,
+                    db=db_session
+                )
+            
+            # 関連する過去の洞察を取得
+            topic = challenges[0] if challenges else "営業スキル"
+            past_insights = await self.history_service.get_relevant_past_insights(
+                user_id=user_id,
+                current_topic=topic,
+                db=db_session
+            )
+        
+        # 情報の充足度を評価（過去の洞察も考慮）
+        completeness_score = await self._evaluate_completeness_with_history(
+            context, solutions, past_insights
+        )
         
         if completeness_score >= 75:  # 閾値を下げて早めにアクションプラン生成
-            # アクションプラン生成（テンプレート付き）
-            action_plan = await self._generate_enhanced_action_plan(context, challenges, solutions)
+            # アクションプラン生成（テンプレート付き + 過去の成功事例）
+            action_plan = await self._generate_enhanced_action_plan_with_history(
+                context, challenges, solutions, past_insights, user_profile
+            )
             return {
                 "type": "action_plan",
                 "data": action_plan,
                 "completeness_score": completeness_score,
-                "solutions_found": solutions
+                "solutions_found": solutions,
+                "past_insights_used": len(past_insights)
             }
         else:
-            # フォローアップ質問を生成
-            follow_up_questions = await self._generate_smart_follow_up_questions(context, solutions)
+            # パーソナライズされたフォローアップ質問を生成
+            if user_profile and past_insights:
+                follow_up_questions = await self.history_service.generate_personalized_questions(
+                    user_id=user_id,
+                    current_context=context,
+                    user_profile=user_profile,
+                    past_insights=past_insights
+                )
+            else:
+                follow_up_questions = await self._generate_smart_follow_up_questions(context, solutions)
             
             # 自己解決を試みる
             self_resolution = await self.self_resolve_questions(follow_up_questions, context)
@@ -229,7 +334,8 @@ class EnhancedDialogueManager:
                 "questions": self_resolution.remaining_questions,
                 "completeness_score": completeness_score,
                 "self_resolved": self_resolution.resolved_questions,
-                "confidence": self_resolution.confidence_level
+                "confidence": self_resolution.confidence_level,
+                "personalized": user_profile is not None
             }
     
     async def _extract_challenges(self, user_response: str) -> List[str]:
@@ -409,3 +515,76 @@ class EnhancedDialogueManager:
         }
         
         return enhanced_response
+    
+    async def _evaluate_completeness_with_history(
+        self,
+        context: Dict[str, Any],
+        solutions: List[Dict[str, Any]],
+        past_insights: List[Dict[str, Any]]
+    ) -> int:
+        """情報の充足度を評価（過去の洞察も含む）"""
+        
+        # 基本評価
+        base_score = await self._evaluate_completeness(context, solutions)
+        
+        # 過去の洞察によるボーナス
+        if past_insights:
+            # 高い関連性の洞察がある場合
+            high_relevance_insights = [i for i in past_insights if i.get("relevance", 0) > 0.7]
+            base_score += len(high_relevance_insights) * 5
+            
+            # 確信度の高い洞察がある場合
+            high_confidence_insights = [i for i in past_insights if i.get("confidence", 0) > 0.8]
+            base_score += len(high_confidence_insights) * 3
+        
+        return min(base_score, 100)
+    
+    async def _generate_enhanced_action_plan_with_history(
+        self,
+        context: Dict[str, Any],
+        challenges: List[str],
+        solutions: List[Dict[str, Any]],
+        past_insights: List[Dict[str, Any]],
+        user_profile: Optional[Any]
+    ) -> Dict[str, Any]:
+        """過去の洞察を活用した強化されたアクションプランを生成"""
+        
+        # ベースのアクションプランを生成
+        base_plan = await self._generate_enhanced_action_plan(context, challenges, solutions)
+        
+        # 過去の洞察を統合
+        if past_insights:
+            # 過去の成功パターンを抽出
+            success_patterns = []
+            for insight in past_insights:
+                if insight["type"] == "strength" or insight["type"] == "success_pattern":
+                    success_patterns.append(insight["content"])
+            
+            # アクションプランに過去の成功パターンを追加
+            base_plan["past_success_patterns"] = success_patterns[:3]  # 最大3個
+            base_plan["insights_integrated"] = True
+            base_plan["insights_count"] = len(past_insights)
+        
+        # ユーザープロファイルに基づくカスタマイズ
+        if user_profile:
+            # 学習スタイルに合わせた調整
+            if user_profile.preferred_learning_style:
+                base_plan["learning_style_adjusted"] = True
+                base_plan["preferred_learning_style"] = user_profile.preferred_learning_style
+                
+                # アクションアイテムを学習スタイルに合わせて調整
+                if user_profile.preferred_learning_style == "visual":
+                    for item in base_plan["action_items"]:
+                        item["visual_aids"] = "図表やビジュアルツールの活用を推奨"
+                elif user_profile.preferred_learning_style == "practical":
+                    for item in base_plan["action_items"]:
+                        item["practice_emphasis"] = "実践的な練習を重視"
+            
+            # 成功率データを追加
+            base_plan["user_stats"] = {
+                "total_sessions": user_profile.total_sessions,
+                "completed_actions": user_profile.completed_actions,
+                "success_rate": user_profile.success_rate
+            }
+        
+        return base_plan

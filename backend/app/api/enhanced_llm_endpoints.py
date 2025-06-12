@@ -47,6 +47,7 @@ class StartEnhancedSessionResponse(BaseModel):
 class SendEnhancedMessageRequest(BaseModel):
     session_id: str
     message: str
+    user_id: Optional[str] = None
 
 
 class SendEnhancedMessageResponse(BaseModel):
@@ -142,7 +143,8 @@ async def send_enhanced_message(request: SendEnhancedMessageRequest):
         result = await dialogue_manager.process_user_response(
             session_id=request.session_id,
             user_response=request.message,
-            db_session=None  # デモ用なのでDBセッションはNone
+            db_session=None,  # デモ用なのでDBセッションはNone
+            user_id=request.user_id
         )
         
         # 結果に基づいてレスポンスを構築
@@ -278,6 +280,129 @@ async def delete_enhanced_session(session_id: str):
         raise HTTPException(status_code=404, detail="セッションが見つかりません")
 
 
+@router.get("/user/{user_id}/history")
+async def get_user_conversation_history(user_id: str, limit: int = 10):
+    """ユーザーの会話履歴を取得"""
+    try:
+        # デモ用の模擬データ
+        mock_history = {
+            "user_id": user_id,
+            "total_sessions": 5,
+            "recent_sessions": [
+                {
+                    "session_id": "enhanced_123",
+                    "created_at": "2024-01-15T10:00:00",
+                    "topic": "プレゼンの緊張対策",
+                    "status": "completed",
+                    "key_insights": [
+                        "緊張時の深呼吸法を習得",
+                        "スライド構成の改善"
+                    ]
+                },
+                {
+                    "session_id": "enhanced_456",
+                    "created_at": "2024-01-10T14:30:00",
+                    "topic": "新規開拓の方法",
+                    "status": "completed",
+                    "key_insights": [
+                        "ターゲット顧客の明確化",
+                        "価値提案の強化"
+                    ]
+                }
+            ],
+            "common_challenges": ["プレゼン時の緊張", "新規開拓", "クロージング"],
+            "strengths": ["製品知識", "顧客対応", "フォローアップ"],
+            "preferred_learning_style": "practical"
+        }
+        
+        return mock_history
+        
+    except Exception as e:
+        logger.error(f"Error getting user history: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"履歴取得エラー: {str(e)}")
+
+
+@router.get("/user/{user_id}/insights")
+async def get_user_insights(user_id: str):
+    """ユーザーの洞察を取得"""
+    try:
+        # デモ用の模擬洞察
+        mock_insights = {
+            "user_id": user_id,
+            "insights": [
+                {
+                    "type": "challenge",
+                    "content": "プレゼンテーション時の緊張管理",
+                    "confidence": 0.85,
+                    "frequency": 3,
+                    "last_observed": "2024-01-15"
+                },
+                {
+                    "type": "strength",
+                    "content": "製品知識の深さと説明力",
+                    "confidence": 0.90,
+                    "frequency": 5,
+                    "last_observed": "2024-01-12"
+                },
+                {
+                    "type": "preference",
+                    "content": "実践的な練習を好む学習スタイル",
+                    "confidence": 0.80,
+                    "frequency": 4,
+                    "last_observed": "2024-01-10"
+                }
+            ],
+            "patterns": [
+                {
+                    "type": "response_style",
+                    "description": "具体例を交えて説明する傾向",
+                    "frequency": 8
+                },
+                {
+                    "type": "learning_pace",
+                    "description": "段階的な改善を好む",
+                    "frequency": 6
+                }
+            ]
+        }
+        
+        return mock_insights
+        
+    except Exception as e:
+        logger.error(f"Error getting user insights: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"洞察取得エラー: {str(e)}")
+
+
+@router.post("/session/{session_id}/summary")
+async def create_session_summary(session_id: str):
+    """セッションのサマリーを作成"""
+    try:
+        if session_id not in enhanced_sessions:
+            raise HTTPException(status_code=404, detail="セッションが見つかりません")
+        
+        session = enhanced_sessions[session_id]
+        
+        # 会話履歴からサマリーを生成（簡易版）
+        summary = {
+            "session_id": session_id,
+            "created_at": session["created_at"],
+            "main_topics": ["プレゼンスキル", "緊張対策"],
+            "challenges_identified": ["人前での緊張", "言葉に詰まる"],
+            "solutions_discussed": ["深呼吸法", "練習方法", "スライド構成"],
+            "action_items": 3,
+            "user_sentiment": "positive",
+            "progress_made": "理解が深まり、具体的な対策を立案"
+        }
+        
+        return summary
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating session summary: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"サマリー作成エラー: {str(e)}")
+
+
 @router.get("/demo/scenario/{scenario}")
 async def run_demo_scenario(scenario: str):
     """デモシナリオ実行"""
@@ -324,7 +449,8 @@ async def run_demo_scenario(scenario: str):
     for message in scenario_data["messages"]:
         msg_request = SendEnhancedMessageRequest(
             session_id=session_id,
-            message=message
+            message=message,
+            user_id=f"demo_{scenario_data['name']}"  # デモ用ユーザーID
         )
         response = await send_enhanced_message(msg_request)
         responses.append({
@@ -335,5 +461,6 @@ async def run_demo_scenario(scenario: str):
     return {
         "scenario": scenario,
         "session_id": session_id,
+        "user_id": f"demo_{scenario_data['name']}",
         "interactions": responses
     }
