@@ -10,6 +10,7 @@ from app.api.test_endpoints import router as test_router
 from app.api.llm_demo_endpoints import router as demo_router
 from app.api.slack_endpoints import router as slack_router
 from app.api.enhanced_llm_endpoints import router as enhanced_router
+from app.api.ideal_dialogue_endpoints import router as ideal_dialogue_router
 
 # ロギング設定
 logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL))
@@ -36,6 +37,7 @@ app.include_router(test_router)
 app.include_router(demo_router)
 app.include_router(slack_router, prefix="/api")
 app.include_router(enhanced_router)
+app.include_router(ideal_dialogue_router, prefix="/api")
 
 
 # テスト用のモデル
