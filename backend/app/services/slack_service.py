@@ -8,6 +8,7 @@ from app.services.dialogue_manager import DialogueManager
 from app.services.conversation_memory import ConversationMemoryService
 from app.services.real_llm_service import RealLLMService
 from app.services.mock_llm import MockLLMProvider
+from app.services.ideal_dialogue_workflow import IdealDialogueWorkflow
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,12 @@ class SlackService:
             self.llm_service = RealLLMService()
             self.memory_service = ConversationMemoryService()
             self.dialogue_manager = DialogueManager()
+        
+        # 理想的な対話ワークフローの初期化
+        self.ideal_dialogue_workflow = IdealDialogueWorkflow()
+        
+        # 理想的な対話セッションの追跡（ユーザーID -> セッションID）
+        self.ideal_dialogue_sessions: Dict[str, str] = {}
         
         # イベントハンドラーを設定
         self._setup_event_handlers()
@@ -149,8 +156,12 @@ class SlackService:
         session_id = f"slack_{user_id}"
         
         try:
-            # AI対話マネージャーで処理（db_sessionはNoneで渡す）
-            response = await self.dialogue_manager.process_user_response(session_id, text, None)
+            # 理想的な対話モードのチェック
+            if await self._is_ideal_dialogue_mode(user_id, text):
+                response = await self._handle_ideal_dialogue(user_id, text)
+            else:
+                # 通常のAI対話マネージャーで処理（db_sessionはNoneで渡す）
+                response = await self.dialogue_manager.process_user_response(session_id, text, None)
             
             # レスポンスタイプに応じて適切にフォーマット
             if response["type"] == "one_on_one_analysis":
@@ -237,6 +248,9 @@ class SlackService:
             elif response["type"] == "action_plan":
                 action_plan = response["data"]
                 formatted_response = self._format_action_plan_for_slack(action_plan, response["completeness_score"])
+            elif response["type"] in ["greeting", "question", "summary", "ideal_dialogue_end"]:
+                # 理想的な対話モードのレスポンス
+                formatted_response = self._format_ideal_dialogue_for_slack(response)
             elif response["type"] == "error":
                 formatted_response = f"⚠️ {response['message']}\n\n簡単な質問から始めてみませんか？"
             else:  # follow_up
@@ -678,6 +692,179 @@ class SlackService:
     async def get_handler(self):
         """FastAPI用のハンドラーを取得"""
         return self.handler
+    
+    async def _is_ideal_dialogue_mode(self, user_id: str, text: str) -> bool:
+        """理想的な対話モードかどうかをチェック"""
+        # 既存の理想的な対話セッションがある場合
+        if user_id in self.ideal_dialogue_sessions:
+            return True
+        
+        # 新しい理想的な対話を開始するキーワード
+        start_keywords = [
+            "ソクラテス",
+            "理想的な対話",
+            "理想の対話",
+            "アクションプラン",
+            "具体化",
+            "コーチング",
+            "成長支援"
+        ]
+        
+        # メッセージに特定のキーワードが含まれているかチェック
+        for keyword in start_keywords:
+            if keyword in text:
+                return True
+        
+        return False
+    
+    async def _handle_ideal_dialogue(self, user_id: str, text: str) -> Dict[str, Any]:
+        """理想的な対話モードでメッセージを処理"""
+        # 既存のセッションがあるかチェック
+        if user_id in self.ideal_dialogue_sessions:
+            session_id = self.ideal_dialogue_sessions[user_id]
+            
+            # セッション終了のキーワードチェック
+            if any(keyword in text for keyword in ["終了", "やめる", "中止", "リセット"]):
+                del self.ideal_dialogue_sessions[user_id]
+                return {
+                    "type": "ideal_dialogue_end",
+                    "message": "理想的な対話セッションを終了しました。通常モードに戻ります。"
+                }
+            
+            # 対話を処理
+            result = await self.ideal_dialogue_workflow.process_response(session_id, text)
+            
+            # サマリーが返ってきたらセッションを終了
+            if result.get("type") == "summary":
+                del self.ideal_dialogue_sessions[user_id]
+            
+            return result
+        else:
+            # 新しいセッションを開始
+            import uuid
+            session_id = f"slack_ideal_{user_id}_{uuid.uuid4().hex[:8]}"
+            
+            # デフォルトの抽象的な指示
+            abstract_instruction = "もっと顧客との関係を深めて売上を伸ばしてほしい"
+            
+            # メッセージから指示を抽出（例：「売上を上げたい」など）
+            if "売上" in text:
+                abstract_instruction = "売上を向上させて欲しい"
+            elif "顧客" in text or "お客様" in text:
+                abstract_instruction = "顧客との関係を強化して欲しい"
+            elif "営業" in text:
+                abstract_instruction = "営業スキルを向上させて欲しい"
+            
+            # セッションを開始
+            result = await self.ideal_dialogue_workflow.start_session(
+                session_id,
+                abstract_instruction,
+                {
+                    "name": f"ユーザー",
+                    "slack_user_id": user_id,
+                    "role": "営業担当",
+                    "channel": "slack"
+                }
+            )
+            
+            # セッションを記録
+            self.ideal_dialogue_sessions[user_id] = session_id
+            
+            return result
+    
+    def _format_ideal_dialogue_for_slack(self, response: Dict[str, Any]) -> str:
+        """理想的な対話の応答をSlack用にフォーマット"""
+        response_type = response.get("type")
+        
+        if response_type == "greeting":
+            return f"🤝 **理想的な対話セッション開始**\n\n{response['message']}"
+        
+        elif response_type == "question":
+            state = response.get("state", "")
+            progress = response.get("progress", {})
+            
+            # 状態に応じた絵文字とタイトル
+            state_info = {
+                "current_situation": ("🔍", "現状把握"),
+                "problem_analysis": ("💡", "課題分析"),
+                "solution_exploration": ("🎯", "解決策探索"),
+                "action_plan": ("📝", "アクションプラン作成"),
+                "execution_support": ("🚀", "実行支援")
+            }
+            
+            emoji, title = state_info.get(state, ("💬", "対話"))
+            
+            formatted = f"{emoji} **{title}**"
+            if progress:
+                formatted += f" (進捗: {progress.get('percentage', 0)}%)\n\n"
+            else:
+                formatted += "\n\n"
+            
+            formatted += response["message"]
+            
+            if response.get("purpose"):
+                formatted += f"\n\n💭 _目的: {response['purpose']}_"
+            
+            return formatted
+        
+        elif response_type == "summary":
+            formatted = "🎉 **素晴らしい！アクションプランが完成しました！**\n\n"
+            formatted += response["message"] + "\n\n"
+            
+            # アクションプランの表示
+            action_plan = response.get("action_plan", {})
+            if action_plan:
+                formatted += "📋 **あなたのアクションプラン:**\n"
+                formatted += "=" * 30 + "\n\n"
+                
+                # 短期目標
+                short_term_goals = action_plan.get("short_term_goals", [])
+                if short_term_goals:
+                    formatted += "🎯 **短期目標（1ヶ月）:**\n"
+                    for i, goal in enumerate(short_term_goals, 1):
+                        formatted += f"\n{i}. **{goal.get('goal', '')}**\n"
+                        for action in goal.get('actions', []):
+                            formatted += f"   • {action}\n"
+                        formatted += f"   📅 期限: {goal.get('deadline', '')}\n"
+                        formatted += f"   📊 測定: {goal.get('metrics', '')}\n"
+                
+                # 成功パターン
+                success_patterns = action_plan.get("success_patterns", [])
+                if success_patterns:
+                    formatted += "\n✨ **活用すべき成功パターン:**\n"
+                    for pattern in success_patterns:
+                        formatted += f"• {pattern}\n"
+                
+                # 進捗確認
+                progress_check = action_plan.get("progress_check", {})
+                if progress_check:
+                    formatted += "\n📅 **進捗確認:**\n"
+                    formatted += f"• 週次: {progress_check.get('weekly', '')}\n"
+                    formatted += f"• 月次: {progress_check.get('monthly', '')}\n"
+            
+            # 洞察
+            insights = response.get("insights", {})
+            if insights:
+                formatted += "\n\n💡 **発見されたあなたの特徴:**\n"
+                if insights.get("strengths"):
+                    formatted += "\n✨ 強み:\n"
+                    for strength in insights["strengths"]:
+                        formatted += f"• {strength}\n"
+                if insights.get("confidence_level"):
+                    formatted += f"\n🎯 {insights['confidence_level']}\n"
+            
+            formatted += "\n✅ 理想的な対話セッションが完了しました。頑張ってください！"
+            
+            return formatted
+        
+        elif response_type == "ideal_dialogue_end":
+            return response["message"]
+        
+        elif response_type == "error":
+            return f"⚠️ {response['message']}"
+        
+        else:
+            return response.get("message", "応答を処理中です...")
 
 
 # シングルトンインスタンス
