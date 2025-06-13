@@ -27,6 +27,9 @@ class SlackService:
         self.processed_events: Set[str] = set()
         self.event_cleanup_time = time.time()
         
+        # IDEAL DIALOGUEデモ用の状態管理
+        self.demo_sessions = {}  # user_id -> demo_state
+        
         # LLMサービスの初期化
         if settings.USE_MOCK_LLM:
             self.llm_service = MockLLMProvider()
@@ -144,6 +147,16 @@ class SlackService:
             return
         
         logger.info(f"Processing message from user {user_id}, length: {len(text)} chars")
+        
+        # IDEAL DIALOGUEデモモードかチェック
+        if self._is_ideal_dialogue_demo_trigger(text):
+            await self._start_ideal_dialogue_demo(user_id, say)
+            return
+        
+        # IDEAL DIALOGUEデモ進行中かチェック
+        if user_id in self.demo_sessions:
+            await self._handle_ideal_dialogue_demo(user_id, text, say)
+            return
         
         # セッションIDとしてSlackユーザーIDを使用
         session_id = f"slack_{user_id}"
@@ -674,6 +687,88 @@ class SlackService:
                 )
             except Exception as say_error:
                 logger.error(f"Failed to send fallback message: {say_error}")
+    
+    def _is_ideal_dialogue_demo_trigger(self, text: str) -> bool:
+        """IDEAL DIALOGUEデモのトリガーかどうかをチェック"""
+        triggers = [
+            "1on1後",
+            "デモ",
+            "demo",
+            "顧客との関係を深めて",
+            "売上を伸ばして",
+            "もっと顧客との関係を深めて売上を伸ばしてほしい"
+        ]
+        return any(trigger in text for trigger in triggers)
+    
+    async def _start_ideal_dialogue_demo(self, user_id: str, say):
+        """IDEAL DIALOGUEデモを開始"""
+        self.demo_sessions[user_id] = {
+            "phase": 1,
+            "responses": []
+        }
+        
+        # フェーズ1: 現状把握
+        await say("""こんにちは田中さん。上司から「顧客との関係を深めて売上を伸ばしてほしい」という指示があったとのことですね。
+
+まず現在の状況を教えてください。今月の売上はいかがでしたか？""")
+    
+    async def _handle_ideal_dialogue_demo(self, user_id: str, text: str, say):
+        """IDEAL DIALOGUEデモの進行を管理"""
+        session = self.demo_sessions[user_id]
+        session["responses"].append(text)
+        
+        if session["phase"] == 1:
+            # フェーズ2: 時間配分の確認
+            session["phase"] = 2
+            await say("""なるほど、目標との差を埋めるために、まず現在の顧客対応について聞かせてください。
+
+既存顧客と新規顧客、それぞれにどのくらい時間を割いていますか？""")
+        
+        elif session["phase"] == 2:
+            # フェーズ3: 指示の解釈確認
+            session["phase"] = 3
+            await say("""そうですね。では「顧客との関係を深める」という上司の指示について、田中さんはどのように解釈していますか？""")
+        
+        elif session["phase"] == 3:
+            # フェーズ4: 成功体験の発見
+            session["phase"] = 4
+            await say("""その通りですね。抽象的で分かりにくい指示ですよね。
+
+少し具体的に考えてみましょう。今の既存顧客との関係で、うまくいっている例はありますか？""")
+        
+        elif session["phase"] == 4:
+            # フェーズ5: 成果の確認
+            session["phase"] = 5
+            await say("""素晴らしいですね！その関係の結果、A社からは何か変化がありましたか？""")
+        
+        elif session["phase"] == 5:
+            # 最終フェーズ: アクションプラン提示
+            await say("""それです！関係が深まった結果、売上が増え、新しい機会も生まれた。これが上司の言う「関係を深めて売上を伸ばす」の具体例ですね。
+
+**📋 具体的なアクションプラン:**
+
+🚀 **優先的に取り組むべきアクション:**
+
+**1. 大口だけど関係が薄い顧客（B社、C社）への定期訪問**
+   • 月1回の定期訪問を実施
+   • 担当者の趣味や関心事を3つずつ把握
+   • 📅 頻度: 毎月第2、第4週
+   • 📊 測定: 関係深度スコア（趣味把握数）
+
+**2. 3ヶ月後の売上目標設定**
+   • B社、C社からそれぞれ10%の売上アップ
+   • 📅 期限: 3ヶ月後
+   • 📊 測定: 月次売上比較
+
+**📅 実装スケジュール:**
+🔴 **今すぐ**: B社、C社の担当者リストアップ
+🟡 **今週中**: 初回訪問のアポイント取得
+🟢 **今月中**: 第1回定期訪問実施
+
+✨ **お疲れ様でした！** 抽象的な指示「顧客との関係を深めて売上を伸ばしてほしい」が、明日から実行できる具体的なアクションプランになりました。""")
+            
+            # セッション終了
+            del self.demo_sessions[user_id]
     
     async def get_handler(self):
         """FastAPI用のハンドラーを取得"""
