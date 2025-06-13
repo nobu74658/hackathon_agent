@@ -162,7 +162,25 @@ python slack_demo.py
 
 # Slack設定ガイド
 python slack_setup_guide.py
+
+# Slack対話デモ（インタラクティブ）
+python slack_dialogue_demo.py
+
+# Slack自動デモ（ユーザー入力不要）
+python slack_auto_demo.py
 ```
+
+#### 📱 Slack対話デモの使い方
+
+**slack_dialogue_demo.py** - インタラクティブなデモ
+- ユーザーの入力を待ちながら対話を進めます
+- 実際のSlackチャンネルで営業相談シナリオを再現
+- サンプル回答を使用するか、独自の回答を入力可能
+
+**slack_auto_demo.py** - 自動実行デモ
+- 事前定義されたシナリオを自動的に実行
+- プレゼンテーション用に最適
+- 複数のシナリオを連続実行可能
 
 ## 📁 プロジェクト構造
 
