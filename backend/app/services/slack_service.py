@@ -127,6 +127,8 @@ class SlackService:
         
         user_id = event.get("user")
         text = event.get("text", "")
+        channel = event.get("channel")
+        timestamp = event.get("ts")
         
         # メンションの場合はBot IDを除去
         if is_mention:
@@ -140,6 +142,16 @@ class SlackService:
         
         # セッションIDとしてSlackユーザーIDを使用
         session_id = f"slack_{user_id}"
+        
+        # 処理中であることを示すリアクションを追加
+        try:
+            await self.app.client.reactions_add(
+                channel=channel,
+                timestamp=timestamp,
+                name="hourglass_flowing_sand"  # ⏳ 砂時計の絵文字
+            )
+        except Exception as e:
+            logger.warning(f"Failed to add reaction: {e}")
         
         try:
             # AI対話マネージャーで処理（db_sessionはNoneで渡す）
@@ -155,8 +167,29 @@ class SlackService:
             
             await say(formatted_response)
             
+            # 処理完了後、リアクションを削除
+            try:
+                await self.app.client.reactions_remove(
+                    channel=channel,
+                    timestamp=timestamp,
+                    name="hourglass_flowing_sand"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to remove reaction: {e}")
+            
         except Exception as e:
             logger.error(f"Error processing message for user {user_id}: {e}")
+            
+            # エラー時もリアクションを削除
+            try:
+                await self.app.client.reactions_remove(
+                    channel=channel,
+                    timestamp=timestamp,
+                    name="hourglass_flowing_sand"
+                )
+            except Exception as ex:
+                logger.warning(f"Failed to remove reaction: {ex}")
+            
             await say("申し訳ございません。処理中にエラーが発生しました。もう一度お試しください。")
     
     def _format_questions_for_slack(self, questions: List[str], completeness_score: int) -> str:
